@@ -35,25 +35,47 @@ jobs:
 
     steps:
       - name: دریافت کد
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: بررسی وجود Secrets
+        id: guard
         env:
           S_HOST: ${{ secrets.DEPLOY_HOST }}
           S_USER: ${{ secrets.DEPLOY_USER }}
           S_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          EVENT: ${{ github.event_name }}
         run: |
           missing=""
           [ -n "$S_HOST" ] || missing="$missing DEPLOY_HOST"
           [ -n "$S_USER" ] || missing="$missing DEPLOY_USER"
           [ -n "$S_KEY" ]  || missing="$missing DEPLOY_SSH_KEY"
-          if [ -n "$missing" ]; then
-            echo "::error::این Secretها تنظیم نشده‌اند:$missing — راهنما: docs/DEPLOY-GITHUB-ACTIONS.md"
+
+          if [ -z "$missing" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "همه‌ی Secretهای لازم موجودند."
+            exit 0
+          fi
+
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          hint="راهنمای راه‌اندازی: docs/DEPLOY-GITHUB-ACTIONS.md"
+          {
+            echo "### ⏭️ استقرار انجام نشد"
+            echo ""
+            echo "این Secretها تنظیم نشده‌اند: \`$missing\`"
+            echo ""
+            echo "$hint"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # اگر کاربر خودش دکمه را زده، باید خطای واضح ببیند؛
+          # ولی یک پوش عادی قبل از راه‌اندازی نباید اجرا را قرمز کند.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "::error::این Secretها تنظیم نشده‌اند:$missing — $hint"
             exit 1
           fi
-          echo "همه‌ی Secretهای لازم موجودند."
+          echo "::warning::این Secretها تنظیم نشده‌اند:$missing — استقرار رد شد. $hint"
 
       - name: آماده‌سازی کلید SSH
+        if: steps.guard.outputs.ready == 'true'
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
@@ -83,6 +105,7 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: آماده‌سازی سرور
+        if: steps.guard.outputs.ready == 'true'
         run: |
           ssh target 'bash -seo pipefail' <<'EOF'
             if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo -n"; fi
@@ -97,6 +120,7 @@ jobs:
           EOF
 
       - name: همگام‌سازی کد با سرور
+        if: steps.guard.outputs.ready == 'true'
         run: |
           # .env و volumeهای داکر روی سرور دست‌نخورده می‌مانند
           rsync -az --delete \
@@ -111,6 +135,7 @@ jobs:
           ssh target "chmod +x '$REMOTE_DIR/deploy.sh' '$REMOTE_DIR/scripts/'*.sh"
 
       - name: استقرار
+        if: steps.guard.outputs.ready == 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'chat.onlane.top' }}
@@ -134,7 +159,7 @@ jobs:
           } | ssh target 'bash -s'
 
       - name: بررسی نهایی
-        if: success()
+        if: success() && steps.guard.outputs.ready == 'true'
         env:
           PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'chat.onlane.top' }}
         run: |

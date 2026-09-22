@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Caddy — HTTPS خودکار + ریورس‌پراکسی + ترمینیت TLS برای TURN
+#  متغیرها از فایل .env خوانده می‌شوند (docker-compose آن‌ها را تزریق می‌کند).
+# ─────────────────────────────────────────────────────────────────────────────
+{
+	email {$ACME_EMAIL}
+
+	# TURN over TLS: کدی که روی 5349 TLS را باز می‌کند و ترافیک TURN خام را
+	# به پورت داخلی LiveKit (5350) می‌فرستد. این باعث می‌شود کاربرانی که
+	# UDP ندارند (VPN / فیلترینگ) از طریق 443-مانند TLS وصل شوند.
+	layer4 {
+		:5349 {
+			@turn tls sni {$TURN_HOST}
+			route @turn {
+				tls {
+					connection_policy {
+						alpn ""
+					}
+				}
+				proxy {
+					upstream 127.0.0.1:5350
+				}
+			}
+		}
+	}
+}
+
+# ── اپلیکیشن اصلی (Mini App + سایت + WebSocket + سیگنالینگ LiveKit) ──────────
+{$PUBLIC_HOST} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), microphone=(self)"
+		-Server
+	}
+
+	# سیگنالینگ LiveKit؛ کلاینت با wss://{$PUBLIC_HOST} وصل می‌شود و
+	# خودش مسیر /rtc را اضافه می‌کند.
+	handle /rtc* {
+		reverse_proxy 127.0.0.1:7880
+	}
+
+	# بک‌اند: WebSocket مچ‌میکر روی /ws + فایل‌های استاتیک فرانت
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+# ── دامنه‌ی TURN ─────────────────────────────────────────────────────────────
+# این بلاک فقط برای این است که Caddy گواهی turn.<domain> را بگیرد و تمدید کند؛
+# همان گواهی توسط بلاک layer4 بالا برای TURN/TLS استفاده می‌شود.
+{$TURN_HOST} {
+	header -Server
+	respond "turn ok" 200
+}

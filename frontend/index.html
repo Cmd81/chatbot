@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0f1115" />
+    <meta name="description" content="تماس تصویری ناشناس و تصادفی" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>تماس تصویری ناشناس</title>
+    <!-- SDK مینی‌اپ تلگرام؛ اگر صفحه بیرون از تلگرام باز شود، بی‌اثر است. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app" data-screen="loading">
+      <!-- ویدیوها (فقط در حالت تماس دیده می‌شوند) -->
+      <div class="stage" id="stage">
+        <video id="remoteVideo" class="remote" autoplay playsinline></video>
+        <div class="remote-placeholder" id="remotePlaceholder">
+          <div class="spinner"></div>
+          <p>در حال اتصال به طرف مقابل…</p>
+        </div>
+        <video id="localVideo" class="local" autoplay playsinline muted></video>
+        <div class="net-badge" id="netBadge" hidden>در حال اتصال مجدد…</div>
+      </div>
+
+      <!-- لایه‌ی محتوا -->
+      <main class="overlay" id="overlay">
+        <section class="panel" data-for="loading">
+          <div class="spinner"></div>
+          <p>در حال آماده‌سازی…</p>
+        </section>
+
+        <section class="panel" data-for="intro">
+          <div class="logo">📹</div>
+          <h1>تماس تصویری ناشناس</h1>
+          <p class="lead">
+            با یک نفر تصادفی تماس تصویری بگیرید. نام، شماره و آی‌دی شما نمایش داده نمی‌شود و
+            تمام تصویر از طریق سرور منتقل می‌شود، بنابراین آی‌پی شما و طرف مقابل به یکدیگر
+            نشان داده نمی‌شود.
+          </p>
+          <button class="btn btn-primary" id="btnStart">شروع</button>
+          <p class="hint">با زدن «شروع»، اجازه‌ی دسترسی به دوربین و میکروفون خواسته می‌شود.</p>
+        </section>
+
+        <section class="panel" data-for="permission">
+          <div class="spinner"></div>
+          <p>در حال گرفتن اجازه‌ی دوربین و میکروفون…</p>
+          <p class="hint">لطفاً در پیام مرورگر گزینه‌ی «اجازه دادن» را بزنید.</p>
+        </section>
+
+        <section class="panel" data-for="waiting">
+          <div class="preview-wrap">
+            <video id="waitPreview" class="preview" autoplay playsinline muted></video>
+          </div>
+          <div class="spinner"></div>
+          <h2>در انتظار کاربر دیگر…</h2>
+          <p class="hint">به‌محض ورود نفر بعدی، تماس شروع می‌شود.</p>
+          <button class="btn btn-ghost" id="btnCancel">لغو</button>
+        </section>
+
+        <section class="panel" data-for="ended">
+          <div class="logo" id="endedIcon">📴</div>
+          <h2 id="endedTitle">تماس پایان یافت</h2>
+          <p class="hint" id="endedText"></p>
+          <button class="btn btn-primary" id="btnNew">تماس جدید</button>
+        </section>
+
+        <section class="panel" data-for="error">
+          <div class="logo">⚠️</div>
+          <h2 id="errorTitle">خطا</h2>
+          <p class="lead" id="errorText"></p>
+          <button class="btn btn-primary" id="btnRetry">تلاش دوباره</button>
+        </section>
+      </main>
+
+      <!-- کنترل‌های تماس -->
+      <div class="controls" id="controls">
+        <button class="ctl" id="btnMic" aria-label="میکروفون" title="میکروفون">
+          <span class="ctl-icon" id="micIcon">🎙️</span>
+        </button>
+        <button class="ctl ctl-danger" id="btnHangup" aria-label="پایان تماس" title="پایان تماس">
+          <span class="ctl-icon">📞</span>
+        </button>
+        <button class="ctl" id="btnCam" aria-label="دوربین" title="دوربین">
+          <span class="ctl-icon" id="camIcon">📷</span>
+        </button>
+      </div>
+
+      <div class="toast" id="toast" hidden></div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

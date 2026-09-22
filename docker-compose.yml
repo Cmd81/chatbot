@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  تماس تصویری ناشناس — استقرار با Docker Compose
+#
+#  هر سه سرویس روی network_mode: host اجرا می‌شوند، چون LiveKit به بازه‌ی
+#  وسیعی از پورت‌های UDP نیاز دارد و NAT داکر برای آن مناسب نیست. مزیت دیگر
+#  این است که قوانین ufw واقعاً اعمال می‌شوند (داکر در حالت host آن‌ها را
+#  دور نمی‌زند).
+# ─────────────────────────────────────────────────────────────────────────────
+name: anon-video
+
+services:
+  # HTTPS خودکار + ریورس‌پراکسی + TLS برای TURN
+  caddy:
+    build:
+      context: ./caddy
+    image: anon-video-caddy:local
+    container_name: anon-video-caddy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST در .env تنظیم نشده}
+      TURN_HOST: ${TURN_HOST:?TURN_HOST در .env تنظیم نشده}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL در .env تنظیم نشده}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - livekit
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ربات تلگرام + مچ‌میکر WebSocket + میزبانی فایل‌های فرانت
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: anon-video-backend:local
+    container_name: anon-video-backend
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      # فقط روی لوپ‌بک گوش می‌دهد؛ دسترسی عمومی از طریق Caddy است.
+      HOST: 127.0.0.1
+      PORT: "3000"
+      PUBLIC_URL: https://${PUBLIC_HOST}
+      LIVEKIT_URL: wss://${PUBLIC_HOST}
+      LIVEKIT_API_URL: http://127.0.0.1:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY در .env تنظیم نشده}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET در .env تنظیم نشده}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_MODE: ${TELEGRAM_MODE:-polling}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      TELEGRAM_API_ROOT: ${TELEGRAM_API_ROOT:-https://api.telegram.org}
+      ALLOW_GUEST: ${ALLOW_GUEST:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      - livekit
+    logging: *default-logging
+
+  # SFU + TURN داخلی
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: anon-video-livekit
+    restart: unless-stopped
+    network_mode: host
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      # کلیدها هرگز داخل livekit.yaml (و گیت) نوشته نمی‌شوند.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    logging: *default-logging
+
+volumes:
+  caddy_data:
+  caddy_config:

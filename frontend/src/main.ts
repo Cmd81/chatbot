@@ -2,10 +2,13 @@ import './styles.css';
 import type { LocalAudioTrack, LocalTrack, LocalVideoTrack, RemoteTrack } from 'livekit-client';
 import {
   CallSession,
+  QUALITY_PRESETS,
   acquireLocalTracks,
   findAudioTrack,
   findVideoTrack,
   mediaErrorMessage,
+  resolveCodec,
+  resolveQuality,
   stopTracks,
 } from './call';
 import { Signal } from './signal';
@@ -15,7 +18,19 @@ import { haptic, initTelegram, insideTelegram, setClosingConfirmation, tg } from
 type Screen = 'loading' | 'intro' | 'permission' | 'waiting' | 'call' | 'ended' | 'error';
 
 const GUEST_KEY = 'anon-video:guest-id';
-const forceRelay = new URLSearchParams(location.search).get('relay') === '1';
+
+// تنظیمات قابل آزمایش از طریق نشانی:
+//   ?q=low|medium|high   کیفیت ویدیو (پیش‌فرض high = ۷۲۰p)
+//   ?codec=vp9|h264      کدک (پیش‌فرض vp8 برای بیشترین سازگاری)
+//   ?relay=1             اجبار عبور از TURN
+const params = new URLSearchParams(location.search);
+const forceRelay = params.get('relay') === '1';
+const quality = resolveQuality(params.get('q'));
+const codec = resolveCodec(params.get('codec'));
+const preset = QUALITY_PRESETS[quality];
+console.info(
+  `[anon-video] کیفیت: ${preset.width}×${preset.height} @ ${Math.round(preset.encoding.maxBitrate / 1000)}kbps / ${preset.encoding.maxFramerate}fps — کدک: ${codec}`,
+);
 
 // ── عناصر DOM ───────────────────────────────────────────────────────────────
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -43,6 +58,21 @@ let queued = false; // کاربر می‌خواهد در صف باشد (برای
 let localTracks: LocalTrack[] = [];
 let call: CallSession | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let wsReconnecting = false;
+let rtcReconnecting = false;
+let poorNetwork = false;
+
+function updateNetBadge(): void {
+  if (wsReconnecting || rtcReconnecting) {
+    netBadge.textContent = 'در حال اتصال مجدد…';
+    netBadge.hidden = false;
+  } else if (poorNetwork) {
+    netBadge.textContent = 'کیفیت شبکه ضعیف است';
+    netBadge.hidden = false;
+  } else {
+    netBadge.hidden = true;
+  }
+}
 
 function setScreen(next: Screen): void {
   screen = next;
@@ -97,7 +127,8 @@ const signal = new Signal(wsUrl, {
     if (screen === 'waiting') {
       toast('اتصال به سرور قطع شد؛ در حال اتصال مجدد…');
     } else if (screen === 'call') {
-      netBadge.hidden = false;
+      wsReconnecting = true;
+      updateNetBadge();
     } else if (!willRetry) {
       showError('اتصال قطع شد', 'ارتباط با سرور برقرار نیست. اینترنت خود را بررسی کنید.');
     }
@@ -117,6 +148,10 @@ function handleServerMessage(msg: ServerMessage): void {
       }
       if (screen === 'loading') setScreen('intro');
       if (screen === 'waiting') toastEl.hidden = true;
+      if (wsReconnecting) {
+        wsReconnecting = false;
+        updateNetBadge();
+      }
       // اگر وسط انتظار اتصال قطع شده بود، دوباره وارد صف می‌شویم.
       if (queued && (screen === 'waiting' || screen === 'permission')) signal.send({ type: 'join' });
       break;
@@ -189,7 +224,7 @@ async function ensureMedia(): Promise<boolean> {
   releaseMedia();
   setScreen('permission');
   try {
-    localTracks = await acquireLocalTracks();
+    localTracks = await acquireLocalTracks(quality);
   } catch (err) {
     showError('دسترسی به دوربین', mediaErrorMessage(err));
     return false;
@@ -220,7 +255,9 @@ async function startCall(url: string, token: string): Promise<void> {
   if (call) await endCall();
   remoteVideo.srcObject = null;
   remotePlaceholder.hidden = false;
-  netBadge.hidden = true;
+  rtcReconnecting = false;
+  poorNetwork = false;
+  updateNetBadge();
   setScreen('call');
   haptic('success');
 
@@ -245,11 +282,16 @@ async function startCall(url: string, token: string): Promise<void> {
         showEnded('تماس قطع شد', 'ارتباط با سرور تماس از دست رفت.', '📴');
       },
       onNetwork: (state) => {
-        netBadge.hidden = state === 'connected';
+        rtcReconnecting = state === 'reconnecting';
+        updateNetBadge();
+      },
+      onQuality: (poor) => {
+        poorNetwork = poor;
+        updateNetBadge();
       },
       onAudioBlocked: () => toast('برای شنیدن صدا، یک‌بار روی صفحه ضربه بزنید.'),
     },
-    forceRelay,
+    { forceRelay, quality, codec },
   );
   call = session;
 
@@ -269,7 +311,10 @@ async function startCall(url: string, token: string): Promise<void> {
 async function endCall(): Promise<void> {
   const session = call;
   call = null;
-  netBadge.hidden = true;
+  wsReconnecting = false;
+  rtcReconnecting = false;
+  poorNetwork = false;
+  updateNetBadge();
   remoteVideo.srcObject = null;
   remotePlaceholder.hidden = false;
   if (session) await session.close();

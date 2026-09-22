@@ -8,30 +8,10 @@ import {
   Room,
   RoomEvent,
   Track,
-  VideoPresets,
   createLocalTracks,
   videoCodecs,
 } from 'livekit-client';
 import type { ScalabilityMode, VideoCodec, VideoPreset } from 'livekit-client';
-
-/**
- * پیش‌تنظیم‌های کیفیت. پیش‌فرض ۷۲۰p است.
- *
- * ۴۸۰p با ۵۰۰ کیلوبیت و ۲۰ فریم — که نسخه‌ی اول داشت — روی نمایش تمام‌صفحه
- * نرم و محو دیده می‌شود، چون روی یک صفحه‌ی ۱۰۸۰p بیش از دو برابر بزرگ‌نمایی
- * می‌شود و ۲۰ فریم حرکت را بریده‌بریده نشان می‌دهد.
- */
-export const QUALITY_PRESETS = {
-  low: VideoPresets.h360,     // 640×360  @ 450k  / 20fps
-  medium: VideoPresets.h540,  // 960×540  @ 800k  / 25fps
-  high: VideoPresets.h720,    // 1280×720 @ 1700k / 30fps
-} as const satisfies Record<string, VideoPreset>;
-
-export type QualityName = keyof typeof QUALITY_PRESETS;
-
-export function resolveQuality(value: string | null): QualityName {
-  return value === 'low' || value === 'medium' || value === 'high' ? value : 'high';
-}
 
 /**
  * VP8 پیش‌فرض است چون روی همه‌ی مرورگرها (از جمله WebView تلگرام روی iOS)
@@ -44,7 +24,8 @@ export function resolveCodec(value: string | null): VideoCodec {
 
 export interface CallOptions {
   forceRelay: boolean;
-  quality: QualityName;
+  /** پله‌ی شروع؛ در حالت خودکار بعداً توسط AdaptiveQuality تغییر می‌کند. */
+  preset: VideoPreset;
   codec: VideoCodec;
 }
 
@@ -83,10 +64,14 @@ export function mediaErrorMessage(err: unknown): string {
 }
 
 /** گرفتن اجازه و ساخت ترک‌های محلی. همین ترک‌ها بعداً منتشر می‌شوند. */
-export async function acquireLocalTracks(quality: QualityName): Promise<LocalTrack[]> {
+export async function acquireLocalTracks(preset: VideoPreset): Promise<LocalTrack[]> {
   return createLocalTracks({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    video: { resolution: QUALITY_PRESETS[quality].resolution, facingMode: 'user' },
+    video: {
+      resolution: preset.resolution,
+      frameRate: preset.encoding.maxFramerate,
+      facingMode: 'user',
+    },
   });
 }
 
@@ -124,7 +109,7 @@ export class CallSession {
     private readonly handlers: CallHandlers,
     options: CallOptions,
   ) {
-    const preset = QUALITY_PRESETS[options.quality];
+    const preset = options.preset;
     const svc = options.codec === 'vp9' || options.codec === 'av1';
 
     this.room = new Room({

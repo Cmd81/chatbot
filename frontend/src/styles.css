@@ -242,3 +242,97 @@ h2 { font-size: 20px; margin: 0; font-weight: 700; }
   .spinner { animation-duration: 3s; }
   .btn, .ctl { transition: none; }
 }
+
+/* ───────────── دکمه و برگه‌ی کیفیت ───────────── */
+.ctl-quality {
+  width: auto;
+  min-width: 60px;
+  height: 60px;
+  padding: 0 14px;
+  border-radius: 30px;
+  font-weight: 700;
+}
+.ctl-label {
+  font-size: 13px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* چهار دکمه روی صفحه‌های باریک جا شوند */
+@media (max-width: 360px) {
+  .controls { gap: 10px; }
+  .ctl { width: 52px; height: 52px; }
+  .ctl-quality { height: 52px; min-width: 52px; padding: 0 10px; border-radius: 26px; }
+  .ctl-icon { font-size: 21px; }
+  .ctl-label { font-size: 12px; }
+}
+
+.sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.sheet[hidden] { display: none; }
+
+.sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.sheet-panel {
+  position: relative;
+  width: 100%;
+  max-width: 460px;
+  background: var(--bg-soft, #171a21);
+  border-radius: 20px 20px 0 0;
+  padding: 20px 18px calc(20px + var(--safe-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.5);
+  animation: sheet-up 0.2s ease;
+}
+@keyframes sheet-up { from { transform: translateY(16px); opacity: 0.6; } }
+
+.sheet-panel h3 { margin: 0; font-size: 17px; text-align: center; }
+
+.sheet-now {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-list { display: flex; flex-direction: column; gap: 8px; }
+
+.sheet-item {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  padding: 12px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sheet-item b { font-size: 15px; font-weight: 600; }
+.sheet-item span { font-size: 12px; color: var(--text-dim); }
+.sheet-item[aria-current='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.sheet-item:active { transform: scale(0.99); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-panel { animation: none; }
+}

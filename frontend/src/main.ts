@@ -2,15 +2,26 @@ import './styles.css';
 import type { LocalAudioTrack, LocalTrack, LocalVideoTrack, RemoteTrack } from 'livekit-client';
 import {
   CallSession,
-  QUALITY_PRESETS,
   acquireLocalTracks,
   findAudioTrack,
   findVideoTrack,
   mediaErrorMessage,
   resolveCodec,
-  resolveQuality,
   stopTracks,
 } from './call';
+import {
+  AdaptiveQuality,
+  IDX,
+  MODE_LABEL,
+  applyPreset,
+  cameraCeiling,
+  describe,
+  isQualityMode,
+  pinnedIndex,
+  presetAt,
+  probeDevice,
+} from './quality';
+import type { QualityMode, QualitySample } from './quality';
 import { Signal } from './signal';
 import type { ServerMessage } from './protocol';
 import { haptic, initTelegram, insideTelegram, setClosingConfirmation, tg } from './tg';
@@ -18,19 +29,39 @@ import { haptic, initTelegram, insideTelegram, setClosingConfirmation, tg } from
 type Screen = 'loading' | 'intro' | 'permission' | 'waiting' | 'call' | 'ended' | 'error';
 
 const GUEST_KEY = 'anon-video:guest-id';
+const QUALITY_KEY = 'anon-video:quality';
 
 // تنظیمات قابل آزمایش از طریق نشانی:
-//   ?q=low|medium|high   کیفیت ویدیو (پیش‌فرض high = ۷۲۰p)
-//   ?codec=vp9|h264      کدک (پیش‌فرض vp8 برای بیشترین سازگاری)
-//   ?relay=1             اجبار عبور از TURN
+//   ?q=auto|low|medium|high   حالت کیفیت (پیش‌فرض auto)
+//   ?codec=vp9|h264           کدک (پیش‌فرض vp8 برای بیشترین سازگاری)
+//   ?relay=1                  اجبار عبور از TURN
 const params = new URLSearchParams(location.search);
 const forceRelay = params.get('relay') === '1';
-const quality = resolveQuality(params.get('q'));
 const codec = resolveCodec(params.get('codec'));
-const preset = QUALITY_PRESETS[quality];
-console.info(
-  `[anon-video] کیفیت: ${preset.width}×${preset.height} @ ${Math.round(preset.encoding.maxBitrate / 1000)}kbps / ${preset.encoding.maxFramerate}fps — کدک: ${codec}`,
-);
+
+function loadMode(): QualityMode {
+  const fromUrl = params.get('q');
+  if (isQualityMode(fromUrl)) return fromUrl;
+  try {
+    const saved = localStorage.getItem(QUALITY_KEY);
+    if (isQualityMode(saved)) return saved;
+  } catch {
+    /* حالت مرور خصوصی */
+  }
+  return 'auto';
+}
+
+const device = probeDevice();
+let qualityMode: QualityMode = loadMode();
+let adaptive: AdaptiveQuality | null = null;
+let lastSample: QualitySample | null = null;
+
+console.info('[anon-video] پروفایل دستگاه:', device, 'حالت:', qualityMode, 'کدک:', codec);
+
+/** پله‌ای که تماس باید با آن شروع شود. */
+function startIndex(): number {
+  return qualityMode === 'auto' ? device.startIndex : pinnedIndex(qualityMode);
+}
 
 // ── عناصر DOM ───────────────────────────────────────────────────────────────
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -224,7 +255,7 @@ async function ensureMedia(): Promise<boolean> {
   releaseMedia();
   setScreen('permission');
   try {
-    localTracks = await acquireLocalTracks(quality);
+    localTracks = await acquireLocalTracks(presetAt(startIndex()));
   } catch (err) {
     showError('دسترسی به دوربین', mediaErrorMessage(err));
     return false;
@@ -291,13 +322,14 @@ async function startCall(url: string, token: string): Promise<void> {
       },
       onAudioBlocked: () => toast('برای شنیدن صدا، یک‌بار روی صفحه ضربه بزنید.'),
     },
-    { forceRelay, quality, codec },
+    { forceRelay, preset: presetAt(startIndex()), codec },
   );
   call = session;
 
   try {
     await session.connect(url, token, localTracks);
     syncControlIcons();
+    void startQualityControl();
   } catch (err) {
     console.error('livekit connect failed', err);
     call = null;
@@ -309,6 +341,9 @@ async function startCall(url: string, token: string): Promise<void> {
 }
 
 async function endCall(): Promise<void> {
+  adaptive?.stop();
+  adaptive = null;
+  lastSample = null;
   const session = call;
   call = null;
   wsReconnecting = false;
@@ -320,6 +355,96 @@ async function endCall(): Promise<void> {
   if (session) await session.close();
   releaseMedia();
 }
+
+// ── کنترل کیفیت ─────────────────────────────────────────────────────────────
+const btnQuality = $<HTMLButtonElement>('btnQuality');
+const qualityLabel = $('qualityLabel');
+const qualitySheet = $('qualitySheet');
+const qualityNow = $('qualityNow');
+
+function saveMode(mode: QualityMode): void {
+  try {
+    localStorage.setItem(QUALITY_KEY, mode);
+  } catch {
+    /* حالت مرور خصوصی */
+  }
+}
+
+function renderQualityUi(): void {
+  qualityLabel.textContent = MODE_LABEL[qualityMode];
+  for (const el of qualitySheet.querySelectorAll<HTMLElement>('.sheet-item')) {
+    el.setAttribute('aria-current', String(el.dataset.mode === qualityMode));
+  }
+  if (lastSample) {
+    const { width, height, fps, reason } = lastSample;
+    const why =
+      reason === 'bandwidth' ? ' — محدود به پهنای باند'
+      : reason === 'cpu' ? ' — محدود به توان دستگاه'
+      : '';
+    qualityNow.textContent = `اکنون: ${width}×${height} @ ${fps}fps${why}`;
+  } else if (call) {
+    qualityNow.textContent = 'در حال اندازه‌گیری…';
+  } else {
+    qualityNow.textContent = `شروع از ${describe(presetAt(startIndex()))}`;
+  }
+}
+
+/** بعد از publish شدن ترک، کنترلر تطبیق راه می‌افتد. */
+async function startQualityControl(): Promise<void> {
+  adaptive?.stop();
+  adaptive = null;
+  const video = findVideoTrack(localTracks);
+  if (!video) return;
+
+  // سقف واقعی دوربین: از یک وبکم ۴۸۰p نباید ۱۰۸۰p خواست.
+  const camMax = cameraCeiling(video);
+
+  if (qualityMode !== 'auto') {
+    await applyPreset(video, presetAt(Math.min(pinnedIndex(qualityMode), camMax)));
+    renderQualityUi();
+    return;
+  }
+
+  adaptive = new AdaptiveQuality(video, {
+    min: IDX.min,
+    max: Math.min(IDX.max, camMax),
+    start: Math.min(device.startIndex, camMax),
+    onSample: (sample) => {
+      lastSample = sample;
+      if (!qualitySheet.hidden) renderQualityUi();
+    },
+  });
+  await adaptive.start();
+  renderQualityUi();
+}
+
+function setQualityMode(mode: QualityMode): void {
+  qualityMode = mode;
+  saveMode(mode);
+  lastSample = null;
+  if (call) void startQualityControl();
+  renderQualityUi();
+}
+
+function openQualitySheet(open: boolean): void {
+  qualitySheet.hidden = !open;
+  btnQuality.setAttribute('aria-expanded', String(open));
+  if (open) renderQualityUi();
+}
+
+btnQuality.addEventListener('click', () => openQualitySheet(qualitySheet.hidden));
+$('btnQualityClose').addEventListener('click', () => openQualitySheet(false));
+$('qualityBackdrop').addEventListener('click', () => openQualitySheet(false));
+for (const el of qualitySheet.querySelectorAll<HTMLElement>('.sheet-item')) {
+  el.addEventListener('click', () => {
+    const mode = el.dataset.mode;
+    if (isQualityMode(mode)) setQualityMode(mode);
+    openQualitySheet(false);
+  });
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !qualitySheet.hidden) openQualitySheet(false);
+});
 
 // ── رویدادهای رابط کاربری ───────────────────────────────────────────────────
 $('btnStart').addEventListener('click', () => void beginSearch());
@@ -386,6 +511,7 @@ window.addEventListener('pagehide', (event) => {
 
 // ── شروع ────────────────────────────────────────────────────────────────────
 initTelegram();
+renderQualityUi();
 setScreen('loading');
 signal.start();
 

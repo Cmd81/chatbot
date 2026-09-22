@@ -87,6 +87,40 @@
         <button class="ctl" id="btnCam" aria-label="دوربین" title="دوربین">
           <span class="ctl-icon" id="camIcon">📷</span>
         </button>
+        <button
+          class="ctl ctl-quality"
+          id="btnQuality"
+          aria-label="کیفیت تصویر"
+          title="کیفیت تصویر"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <span class="ctl-label" id="qualityLabel">خودکار</span>
+        </button>
+      </div>
+
+      <!-- انتخاب کیفیت -->
+      <div class="sheet" id="qualitySheet" hidden>
+        <div class="sheet-backdrop" id="qualityBackdrop"></div>
+        <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="qualityTitle">
+          <h3 id="qualityTitle">کیفیت تصویر</h3>
+          <p class="sheet-now" id="qualityNow">در حال اندازه‌گیری…</p>
+          <div class="sheet-list">
+            <button class="sheet-item" data-mode="auto">
+              <b>خودکار</b><span>بر اساس سرعت اینترنت و توان دستگاه</span>
+            </button>
+            <button class="sheet-item" data-mode="high">
+              <b>بالا</b><span>۱۰۸۰p — پرمصرف</span>
+            </button>
+            <button class="sheet-item" data-mode="medium">
+              <b>متوسط</b><span>۷۲۰p</span>
+            </button>
+            <button class="sheet-item" data-mode="low">
+              <b>پایین</b><span>۳۶۰p — کم‌مصرف</span>
+            </button>
+          </div>
+          <button class="btn btn-ghost" id="btnQualityClose">بستن</button>
+        </div>
       </div>
 
       <div class="toast" id="toast" hidden></div>

@@ -80,6 +80,8 @@ const toastEl = $('toast');
 const micIcon = $('micIcon');
 const camIcon = $('camIcon');
 const btnMic = $<HTMLButtonElement>('btnMic');
+const waitTitle = $('waitTitle');
+const waitInfo = $('waitInfo');
 const btnCam = $<HTMLButtonElement>('btnCam');
 
 // ── وضعیت ───────────────────────────────────────────────────────────────────
@@ -190,6 +192,10 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'waiting':
       queued = true;
+      waitInfo.textContent =
+        msg.total > 1
+          ? `نفر ${msg.position} از ${msg.total} در صف — به‌محض نوبتتان تماس شروع می‌شود.`
+          : 'به‌محض ورود نفر بعدی، تماس شروع می‌شود.';
       setScreen('waiting');
       break;
 
@@ -199,10 +205,9 @@ function handleServerMessage(msg: ServerMessage): void {
       break;
 
     case 'partner_left':
-      queued = false;
-      void endCall();
-      showEnded('طرف مقابل تماس را ترک کرد', 'می‌توانید یک تماس جدید شروع کنید.', '👋');
       haptic('warning');
+      // جریان پیوسته: به‌جای بن‌بست، خودکار سراغ نفر بعدی می‌رویم.
+      void requeue('طرف مقابل تماس را ترک کرد');
       break;
 
     case 'call_ended':
@@ -340,7 +345,10 @@ async function startCall(url: string, token: string): Promise<void> {
   }
 }
 
-async function endCall(): Promise<void> {
+/**
+ * @param keepMedia دوربین و میکروفون روشن بمانند تا تماس بعدی فوری شروع شود.
+ */
+async function endCall(keepMedia = false): Promise<void> {
   adaptive?.stop();
   adaptive = null;
   lastSample = null;
@@ -352,8 +360,22 @@ async function endCall(): Promise<void> {
   updateNetBadge();
   remoteVideo.srcObject = null;
   remotePlaceholder.hidden = false;
-  if (session) await session.close();
-  releaseMedia();
+  if (session) await session.close(!keepMedia);
+  if (!keepMedia) releaseMedia();
+}
+
+/** پایان تماس فعلی و برگشت فوری به صف، بدون خاموش کردن دوربین. */
+async function requeue(reason: string): Promise<void> {
+  waitTitle.textContent = `${reason} — در حال یافتن نفر بعدی…`;
+  waitInfo.textContent = 'برای توقف، «لغو» را بزنید.';
+  queued = true;
+  setScreen('waiting');
+  await endCall(true);
+  if (!signal.send({ type: 'join' })) {
+    queued = false;
+    releaseMedia();
+    showError('اتصال قطع شد', 'ارتباط با سرور برقرار نیست. دوباره تلاش کنید.');
+  }
 }
 
 // ── کنترل کیفیت ─────────────────────────────────────────────────────────────
@@ -461,6 +483,12 @@ $('btnCancel').addEventListener('click', () => {
   setScreen('intro');
 });
 
+$('btnNext').addEventListener('click', () => {
+  // سرور اتاق را می‌بندد، به طرف مقابل خبر می‌دهد و ما را دوباره ته صف می‌گذارد.
+  signal.send({ type: 'next' });
+  void requeue('تماس پایان یافت');
+});
+
 $('btnHangup').addEventListener('click', () => {
   queued = false;
   signal.send({ type: 'leave' });
@@ -493,6 +521,8 @@ async function beginSearch(): Promise<void> {
     return;
   }
   if (!(await ensureMedia())) return;
+  waitTitle.textContent = 'در انتظار کاربر دیگر…';
+  waitInfo.textContent = 'به‌محض ورود نفر بعدی، تماس شروع می‌شود.';
   queued = true;
   setScreen('waiting');
   signal.send({ type: 'join' });

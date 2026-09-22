@@ -4,20 +4,23 @@ import { anonymousIdentity, createRoom, deleteRoom, issueToken, newRoomName } fr
 import type { Peer } from './protocol.js';
 
 /**
- * مچ‌میکر درون‌حافظه‌ای با یک «جایگاه انتظار».
+ * مچ‌میکر درون‌حافظه‌ای با یک صف FIFO.
  *
- * قاعده‌ی جلوگیری از race: تمام تغییر وضعیت صف و جفت‌سازی در یک تابع
- * *کاملاً همگام* (بدون await) انجام می‌شود. چون Node تک‌نخی است، این بخش
- * اتمیک است و امکان ندارد دو نفر هم‌زمان یک نفرِ منتظر را بردارند.
- * کارهای async (ساخت اتاق و صدور توکن) بعد از بستن آن بخش انجام می‌شوند.
+ * هر کس وارد می‌شود، اگر کسی در صف باشد فوراً به **قدیمی‌ترین نفرِ صف** وصل
+ * می‌شود؛ وگرنه خودش ته صف می‌ایستد.
+ *
+ * قاعده‌ی جلوگیری از race: تمام تغییر صف و جفت‌سازی در یک تابع *کاملاً همگام*
+ * (بدون await) انجام می‌شود. چون Node تک‌نخی است، این بخش اتمیک است و امکان
+ * ندارد دو نفر هم‌زمان یک نفرِ منتظر را بردارند. کارهای async (ساخت اتاق و
+ * صدور توکن) بعد از بستن آن بخش انجام می‌شوند.
  */
 export class Matchmaker {
-  private waiting: Peer | null = null;
+  private readonly queue: Peer[] = [];
   private readonly rooms = new Map<string, [Peer, Peer]>();
   private matchCounter = 0;
 
   stats(): { waiting: number; rooms: number; matches: number } {
-    return { waiting: this.waiting ? 1 : 0, rooms: this.rooms.size, matches: this.matchCounter };
+    return { waiting: this.queue.length, rooms: this.rooms.size, matches: this.matchCounter };
   }
 
   join(peer: Peer): void {
@@ -26,7 +29,7 @@ export class Matchmaker {
       return;
     }
     if (peer.state === 'waiting') {
-      peer.send({ type: 'waiting' }); // idempotent
+      this.sendPosition(peer, true); // idempotent
       return;
     }
     if (peer.state === 'matching' || peer.state === 'matched') {
@@ -35,25 +38,24 @@ export class Matchmaker {
     }
 
     // ─────────── شروع بخش اتمیک (بدون await) ───────────
-    const current = this.waiting;
-    if (current && current !== peer && current.identity === peer.identity) {
-      // همان کاربر از تب/دستگاه دیگر وارد شده؛ اتصال قدیمی از صف خارج می‌شود
-      // تا کاربر با خودش مچ نشود و دو بار هم در صف نماند.
-      this.waiting = null;
-      current.state = 'idle';
-      if (current.isOpen()) current.send({ type: 'cancelled', reason: 'replaced' });
-    }
+    this.pruneClosed();
 
-    if (this.waiting === null) {
-      this.waiting = peer;
+    // هر کاربر فقط یک جایگاه در صف دارد؛ اتصال قدیمی‌تر کنار می‌رود تا یک
+    // نفر نتواند چند جای صف را اشغال کند و با خودش هم مچ نشود.
+    this.evictSameIdentity(peer);
+
+    // قدیمی‌ترین نفرِ صف که همان کاربر نباشد
+    const index = this.queue.findIndex((p) => p.identity !== peer.identity);
+
+    if (index === -1) {
+      this.queue.push(peer);
       peer.state = 'waiting';
-      peer.send({ type: 'waiting' });
-      log.info('peer waiting', { connId: peer.connId });
+      log.info('peer queued', { connId: peer.connId, queue: this.queue.length });
+      this.broadcastPositions();
       return;
     }
 
-    const partner = this.waiting;
-    this.waiting = null;
+    const partner = this.queue.splice(index, 1)[0] as Peer;
     const roomName = newRoomName();
     peer.state = 'matching';
     partner.state = 'matching';
@@ -61,12 +63,94 @@ export class Matchmaker {
     partner.roomName = roomName;
     peer.partner = partner;
     partner.partner = peer;
+    partner.lastPosition = null;
     this.rooms.set(roomName, [partner, peer]);
     this.matchCounter += 1;
     // ─────────── پایان بخش اتمیک ───────────
 
-    log.info('match created', { roomName, a: partner.connId, b: peer.connId });
+    log.info('match created', { roomName, a: partner.connId, b: peer.connId, queue: this.queue.length });
+    this.broadcastPositions();
     void this.finalizeMatch(roomName, partner, peer);
+  }
+
+  /** پایان تماس فعلی و برگشت فوری به صف. */
+  next(peer: Peer): void {
+    this.teardown(peer, true);
+    this.join(peer);
+  }
+
+  /** لغو انتظار توسط خود کاربر. اگر در تماس باشد، معادل leave است. */
+  cancel(peer: Peer): void {
+    if (peer.state === 'waiting') {
+      this.removeFromQueue(peer);
+      peer.state = 'idle';
+      peer.send({ type: 'cancelled', reason: 'user' });
+      this.broadcastPositions();
+      return;
+    }
+    if (peer.state === 'matching' || peer.state === 'matched') {
+      this.leave(peer);
+      return;
+    }
+    peer.send({ type: 'cancelled', reason: 'user' });
+  }
+
+  /** پایان تماس توسط خود کاربر (بدون برگشت به صف). */
+  leave(peer: Peer): void {
+    const wasInCall = peer.state === 'matching' || peer.state === 'matched';
+    this.teardown(peer, true);
+    if (peer.isOpen()) peer.send({ type: wasInCall ? 'call_ended' : 'cancelled' });
+  }
+
+  /** قطع شدن اتصال (بسته شدن سوکت). */
+  disconnect(peer: Peer): void {
+    this.teardown(peer, true);
+  }
+
+  // ───────────────────────────── داخلی ─────────────────────────────
+
+  private removeFromQueue(peer: Peer): boolean {
+    const i = this.queue.indexOf(peer);
+    if (i === -1) return false;
+    this.queue.splice(i, 1);
+    peer.lastPosition = null;
+    return true;
+  }
+
+  private pruneClosed(): void {
+    for (let i = this.queue.length - 1; i >= 0; i -= 1) {
+      const p = this.queue[i] as Peer;
+      if (!p.isOpen()) {
+        this.queue.splice(i, 1);
+        p.state = 'idle';
+        p.lastPosition = null;
+      }
+    }
+  }
+
+  private evictSameIdentity(peer: Peer): void {
+    for (let i = this.queue.length - 1; i >= 0; i -= 1) {
+      const p = this.queue[i] as Peer;
+      if (p === peer || p.identity !== peer.identity) continue;
+      this.queue.splice(i, 1);
+      p.state = 'idle';
+      p.lastPosition = null;
+      if (p.isOpen()) p.send({ type: 'cancelled', reason: 'replaced' });
+    }
+  }
+
+  private sendPosition(peer: Peer, force = false): void {
+    const i = this.queue.indexOf(peer);
+    if (i === -1) return;
+    const position = i + 1;
+    if (!force && peer.lastPosition === position) return;
+    peer.lastPosition = position;
+    peer.send({ type: 'waiting', position, total: this.queue.length });
+  }
+
+  /** بعد از هر تغییر صف، جایگاه تازه به کسانی که عوض شده اعلام می‌شود. */
+  private broadcastPositions(): void {
+    for (const p of this.queue) this.sendPosition(p);
   }
 
   private async finalizeMatch(roomName: string, a: Peer, b: Peer): Promise<void> {
@@ -108,39 +192,12 @@ export class Matchmaker {
     }
   }
 
-  /** لغو انتظار توسط خود کاربر. اگر در تماس باشد، معادل leave است. */
-  cancel(peer: Peer): void {
-    if (peer.state === 'waiting') {
-      if (this.waiting === peer) this.waiting = null;
-      peer.state = 'idle';
-      peer.send({ type: 'cancelled', reason: 'user' });
-      return;
-    }
-    if (peer.state === 'matching' || peer.state === 'matched') {
-      this.leave(peer);
-      return;
-    }
-    peer.send({ type: 'cancelled', reason: 'user' });
-  }
-
-  /** پایان تماس توسط خود کاربر. */
-  leave(peer: Peer): void {
-    const wasInCall = peer.state === 'matching' || peer.state === 'matched';
-    this.teardown(peer, true);
-    if (peer.isOpen()) peer.send({ type: wasInCall ? 'call_ended' : 'cancelled' });
-  }
-
-  /** قطع شدن اتصال (بسته شدن سوکت). */
-  disconnect(peer: Peer): void {
-    this.teardown(peer, true);
-  }
-
   /**
    * پاک‌سازی idempotent: کاربر را از صف و اتاق خارج می‌کند و در صورت نیاز
    * به طرف مقابل خبر می‌دهد و اتاق را در LiveKit می‌بندد.
    */
   private teardown(peer: Peer, notifyPartner: boolean): void {
-    if (this.waiting === peer) this.waiting = null;
+    const wasQueued = this.removeFromQueue(peer);
 
     const roomName = peer.roomName;
     const partner = peer.partner;
@@ -150,10 +207,10 @@ export class Matchmaker {
     peer.partner = null;
 
     if (partner) {
+      this.removeFromQueue(partner);
       partner.partner = null;
       partner.roomName = null;
       partner.state = 'idle';
-      if (this.waiting === partner) this.waiting = null;
       if (notifyPartner && partner.isOpen()) partner.send({ type: 'partner_left' });
     }
 
@@ -162,5 +219,7 @@ export class Matchmaker {
       void deleteRoom(roomName);
       log.info('room closed', { roomName });
     }
+
+    if (wasQueued || partner) this.broadcastPositions();
   }
 }

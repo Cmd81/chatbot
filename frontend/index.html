@@ -24,6 +24,16 @@
         </div>
         <video id="localVideo" class="local" autoplay playsinline muted></video>
         <div class="net-badge" id="netBadge" hidden>در حال اتصال مجدد…</div>
+        <button
+          class="quality-pill"
+          id="btnQuality"
+          aria-label="کیفیت تصویر"
+          title="کیفیت تصویر"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+        >
+          <span id="qualityLabel">خودکار</span>
+        </button>
       </div>
 
       <!-- لایه‌ی محتوا -->
@@ -56,8 +66,8 @@
             <video id="waitPreview" class="preview" autoplay playsinline muted></video>
           </div>
           <div class="spinner"></div>
-          <h2>در انتظار کاربر دیگر…</h2>
-          <p class="hint">به‌محض ورود نفر بعدی، تماس شروع می‌شود.</p>
+          <h2 id="waitTitle">در انتظار کاربر دیگر…</h2>
+          <p class="hint" id="waitInfo">به‌محض ورود نفر بعدی، تماس شروع می‌شود.</p>
           <button class="btn btn-ghost" id="btnCancel">لغو</button>
         </section>
 
@@ -81,21 +91,14 @@
         <button class="ctl" id="btnMic" aria-label="میکروفون" title="میکروفون">
           <span class="ctl-icon" id="micIcon">🎙️</span>
         </button>
-        <button class="ctl ctl-danger" id="btnHangup" aria-label="پایان تماس" title="پایان تماس">
-          <span class="ctl-icon">📞</span>
-        </button>
         <button class="ctl" id="btnCam" aria-label="دوربین" title="دوربین">
           <span class="ctl-icon" id="camIcon">📷</span>
         </button>
-        <button
-          class="ctl ctl-quality"
-          id="btnQuality"
-          aria-label="کیفیت تصویر"
-          title="کیفیت تصویر"
-          aria-haspopup="dialog"
-          aria-expanded="false"
-        >
-          <span class="ctl-label" id="qualityLabel">خودکار</span>
+        <button class="ctl" id="btnNext" aria-label="نفر بعدی" title="نفر بعدی">
+          <span class="ctl-icon">⏭️</span>
+        </button>
+        <button class="ctl ctl-danger" id="btnHangup" aria-label="پایان تماس" title="پایان تماس">
+          <span class="ctl-icon">📞</span>
         </button>
       </div>
 

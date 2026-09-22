@@ -3,6 +3,8 @@ export type ClientMessage =
   | { type: 'auth'; mode: 'telegram'; initData: string }
   | { type: 'auth'; mode: 'guest'; guestId?: string }
   | { type: 'join' }
+  /** پایان تماس فعلی و برگشت فوری به صف (دکمه‌ی «نفر بعدی») */
+  | { type: 'next' }
   | { type: 'cancel' }
   | { type: 'leave' }
   | { type: 'ping' };
@@ -21,7 +23,8 @@ export type ErrorCode =
 /** پیام‌هایی که سرور می‌فرستد. */
 export type ServerMessage =
   | { type: 'ready'; mode: 'telegram' | 'guest'; sessionId: string; guestId?: string }
-  | { type: 'waiting' }
+  /** `position` از ۱ شروع می‌شود؛ `total` کل افراد داخل صف است. */
+  | { type: 'waiting'; position: number; total: number }
   | { type: 'matched'; room: string; url: string; token: string }
   | { type: 'partner_left' }
   | { type: 'call_ended' }
@@ -39,6 +42,8 @@ export interface Peer {
   state: PeerState;
   roomName: string | null;
   partner: Peer | null;
+  /** آخرین جایگاهی که به این کاربر اعلام شده؛ برای جلوگیری از پیام تکراری. */
+  lastPosition: number | null;
   send(msg: ServerMessage): void;
   isOpen(): boolean;
   close(code?: number, reason?: string): void;

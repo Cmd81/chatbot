@@ -194,13 +194,17 @@ export class CallSession {
     }
   }
 
-  async close(): Promise<void> {
+  /**
+   * @param stopTracks اگر false باشد، دوربین و میکروفون روشن می‌مانند تا
+   * تماس بعدی بدون تأخیر و بدون پرسیدن دوباره‌ی اجازه شروع شود.
+   */
+  async close(stopTracks = true): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     for (const el of this.audioEls.values()) el.remove();
     this.audioEls.clear();
     try {
-      await this.room.disconnect(true);
+      await this.room.disconnect(stopTracks);
     } catch {
       /* noop */
     }

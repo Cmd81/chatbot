@@ -16,6 +16,7 @@ class SocketPeer implements Peer {
   state: Peer['state'] = 'idle';
   roomName: string | null = null;
   partner: Peer | null = null;
+  lastPosition: number | null = null;
   authMode: 'telegram' | 'guest' | null = null;
   alive = true;
 
@@ -204,6 +205,9 @@ export function attachWebSocketServer(httpServer: HttpServer, matchmaker: Matchm
             break;
           case 'join':
             matchmaker.join(peer);
+            break;
+          case 'next':
+            matchmaker.next(peer);
             break;
           case 'cancel':
             matchmaker.cancel(peer);

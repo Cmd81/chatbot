@@ -2,13 +2,14 @@ export type ClientMessage =
   | { type: 'auth'; mode: 'telegram'; initData: string }
   | { type: 'auth'; mode: 'guest'; guestId?: string }
   | { type: 'join' }
+  | { type: 'next' }
   | { type: 'cancel' }
   | { type: 'leave' }
   | { type: 'ping' };
 
 export type ServerMessage =
   | { type: 'ready'; mode: 'telegram' | 'guest'; sessionId: string; guestId?: string }
-  | { type: 'waiting' }
+  | { type: 'waiting'; position: number; total: number }
   | { type: 'matched'; room: string; url: string; token: string }
   | { type: 'partner_left' }
   | { type: 'call_ended' }

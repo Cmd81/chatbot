@@ -105,7 +105,9 @@ body {
 .net-badge {
   position: absolute;
   top: calc(14px + var(--safe-top));
-  inset-inline-end: 12px;
+  inset-inline: 0;
+  width: fit-content;
+  margin-inline: auto;
   z-index: 4;
   background: rgba(0, 0, 0, 0.65);
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -264,28 +266,32 @@ h2 { font-size: 20px; margin: 0; font-weight: 700; }
 }
 
 /* ───────────── دکمه و برگه‌ی کیفیت ───────────── */
-.ctl-quality {
-  width: auto;
-  min-width: 60px;
-  height: 60px;
-  padding: 0 14px;
-  border-radius: 30px;
-  font-weight: 700;
-}
-.ctl-label {
+/* دکمه‌ی کیفیت بالای تصویر می‌نشیند تا نوار کنترل شلوغ نشود */
+.quality-pill {
+  position: absolute;
+  top: calc(14px + var(--safe-top));
+  inset-inline-end: 12px;
+  z-index: 4;
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  color: var(--text);
+  font: inherit;
   font-size: 13px;
-  line-height: 1.2;
-  text-align: center;
+  font-weight: 600;
   white-space: nowrap;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
 }
+.quality-pill:active { transform: scale(0.96); }
 
 /* چهار دکمه روی صفحه‌های باریک جا شوند */
 @media (max-width: 360px) {
-  .controls { gap: 10px; }
-  .ctl { width: 52px; height: 52px; }
-  .ctl-quality { height: 52px; min-width: 52px; padding: 0 10px; border-radius: 26px; }
+  .controls { gap: 12px; }
+  .ctl { width: 54px; height: 54px; }
   .ctl-icon { font-size: 21px; }
-  .ctl-label { font-size: 12px; }
 }
 
 .sheet {

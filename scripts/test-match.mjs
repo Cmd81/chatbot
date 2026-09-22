@@ -122,8 +122,9 @@ async function main() {
     check('هر دو کلاینت احراز هویت شدند', Boolean(guestA && guestB && guestA !== guestB));
 
     a.send({ type: 'join' });
-    await a.expect('waiting');
+    const w1 = await a.expect('waiting');
     check('نفر اول پیام waiting گرفت', true);
+    check('پیام waiting جایگاه صف را دارد', w1.position === 1 && w1.total === 1, JSON.stringify(w1));
 
     const quiet = await a.expectSilence('matched', 800);
     check('نفر اول تا نیامدن نفر دوم مچ نشد', quiet);
@@ -243,6 +244,42 @@ async function main() {
     late.send({ type: 'join' });
     const [lm1, lm2] = await Promise.all([leftover.expect('matched'), late.expect('matched')]);
     check('نفر باقی‌مانده با کاربر بعدی مچ شد', lm1.room === lm2.room);
+
+    // ── سناریوی ۸: دکمه‌ی «نفر بعدی» ───────────────────────────────────────
+    console.log('\n۸) نفر بعدی (next):');
+    const n1 = track(new TestClient('N1'));
+    const n2 = track(new TestClient('N2'));
+    await authGuest(n1);
+    await authGuest(n2);
+    n1.send({ type: 'join' });
+    await n1.expect('waiting');
+    n2.send({ type: 'join' });
+    await Promise.all([n1.expect('matched'), n2.expect('matched')]);
+    check('دو نفر مچ شدند', true);
+
+    // N1 دکمه‌ی «نفر بعدی» را می‌زند
+    n1.send({ type: 'next' });
+    await n2.expect('partner_left');
+    check('طرف مقابل partner_left گرفت', true);
+    const nw = await n1.expect('waiting');
+    check('زننده‌ی next بدون نیاز به join دوباره وارد صف شد', nw.position === 1, JSON.stringify(nw));
+
+    // نفر سوم می‌آید و با او مچ می‌شود
+    const n3 = track(new TestClient('N3'));
+    await authGuest(n3);
+    n3.send({ type: 'join' });
+    const [nm1, nm3] = await Promise.all([n1.expect('matched'), n3.expect('matched')]);
+    check('بلافاصله با نفر بعدی مچ شد', nm1.room === nm3.room);
+    check('اتاق تازه با اتاق قبلی فرق دارد', nm1.room !== undefined && nm1.room !== nw.room);
+
+    // next وقتی کاربر در تماس نیست = فقط ورود به صف
+    n1.send({ type: 'leave' });
+    await n3.expect('partner_left');
+    n1.send({ type: 'next' });
+    const nw2 = await n1.expect('waiting');
+    check('next بیرون از تماس هم فقط وارد صف می‌کند', nw2.type === 'waiting');
+    n1.send({ type: 'cancel' });
+    await n1.expect('cancelled');
 
     await sleep(200);
   } catch (err) {

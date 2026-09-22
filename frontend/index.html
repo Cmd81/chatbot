@@ -94,6 +94,10 @@
         <button class="ctl" id="btnCam" aria-label="دوربین" title="دوربین">
           <span class="ctl-icon" id="camIcon">📷</span>
         </button>
+        <button class="ctl" id="btnChat" aria-label="گفتگو" title="گفتگو">
+          <span class="ctl-icon">💬</span>
+          <span class="ctl-badge" id="chatBadge" hidden>0</span>
+        </button>
         <button class="ctl" id="btnNext" aria-label="نفر بعدی" title="نفر بعدی">
           <span class="ctl-icon">⏭️</span>
         </button>
@@ -125,6 +129,32 @@
           <button class="btn btn-ghost" id="btnQualityClose">بستن</button>
         </div>
       </div>
+
+      <!-- گفتگوی متنی -->
+      <section class="chat" id="chatPanel" hidden aria-label="گفتگو">
+        <header class="chat-head">
+          <div>
+            <b>گفتگو</b>
+            <span class="chat-note">پیام‌ها فقط تا پایان همین تماس باقی می‌مانند</span>
+          </div>
+          <button class="chat-close" id="btnChatClose" aria-label="بستن گفتگو">✕</button>
+        </header>
+        <div class="chat-list" id="chatList" role="log" aria-live="polite">
+          <p class="chat-empty" id="chatEmpty">هنوز پیامی رد و بدل نشده.</p>
+        </div>
+        <form class="chat-form" id="chatForm" autocomplete="off">
+          <input
+            id="chatInput"
+            type="text"
+            maxlength="500"
+            placeholder="پیام بنویسید…"
+            enterkeyhint="send"
+            autocomplete="off"
+            autocorrect="off"
+          />
+          <button type="submit" id="btnChatSend" aria-label="ارسال">➤</button>
+        </form>
+      </section>
 
       <div class="toast" id="toast" hidden></div>
     </div>

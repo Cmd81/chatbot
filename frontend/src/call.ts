@@ -12,6 +12,8 @@ import {
   videoCodecs,
 } from 'livekit-client';
 import type { ScalabilityMode, VideoCodec, VideoPreset } from 'livekit-client';
+import { CHAT_TOPIC } from './chat';
+import type { ChatPayload } from './chat';
 
 /**
  * VP8 پیش‌فرض است چون روی همه‌ی مرورگرها (از جمله WebView تلگرام روی iOS)
@@ -36,6 +38,8 @@ export interface CallHandlers {
   onNetwork(state: 'reconnecting' | 'connected'): void;
   onQuality(poor: boolean): void;
   onAudioBlocked(): void;
+  /** بسته‌ی خام گفتگو؛ رمزگشایی در لایه‌ی بالاتر انجام می‌شود. */
+  onChatData(payload: Uint8Array): void;
 }
 
 /** پیام فارسی برای خطاهای رایج دوربین/میکروفون. */
@@ -173,6 +177,10 @@ export class CallSession {
         const poor = qualities.some((q) => q === ConnectionQuality.Poor || q === ConnectionQuality.Lost);
         this.handlers.onQuality(poor);
       })
+      .on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+        if (topic !== CHAT_TOPIC) return;
+        this.handlers.onChatData(payload);
+      })
       .on(RoomEvent.AudioPlaybackStatusChanged, () => {
         if (!this.room.canPlaybackAudio) this.handlers.onAudioBlocked();
       });
@@ -183,6 +191,11 @@ export class CallSession {
     for (const track of localTracks) {
       await this.room.localParticipant.publishTrack(track);
     }
+  }
+
+  /** ارسال پیام گفتگو روی کانال داده (reliable تا پیامی گم نشود). */
+  async sendChat(payload: ChatPayload): Promise<void> {
+    await this.room.localParticipant.publishData(payload, { reliable: true, topic: CHAT_TOPIC });
   }
 
   /** مرورگرها گاهی پخش صدا را تا اولین لمس کاربر بلاک می‌کنند. */

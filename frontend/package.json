@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:quality": "tsx ../scripts/test-quality.ts"
+    "test:quality": "tsx ../scripts/test-quality.ts",
+    "test:chat": "tsx ../scripts/test-chat.ts"
   },
   "dependencies": {
     "livekit-client": "^2.22.3"

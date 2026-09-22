@@ -22,6 +22,8 @@ import {
   probeDevice,
 } from './quality';
 import type { QualityMode, QualitySample } from './quality';
+import { ChatStore, MAX_MESSAGES, SendLimiter, decode, encode, newMessageId, sanitize } from './chat';
+import type { ChatMessage } from './chat';
 import { Signal } from './signal';
 import type { ServerMessage } from './protocol';
 import { haptic, initTelegram, insideTelegram, setClosingConfirmation, tg } from './tg';
@@ -326,6 +328,7 @@ async function startCall(url: string, token: string): Promise<void> {
         updateNetBadge();
       },
       onAudioBlocked: () => toast('برای شنیدن صدا، یک‌بار روی صفحه ضربه بزنید.'),
+      onChatData: receiveChat,
     },
     { forceRelay, preset: presetAt(startIndex()), codec },
   );
@@ -362,6 +365,9 @@ async function endCall(keepMedia = false): Promise<void> {
   remotePlaceholder.hidden = false;
   if (session) await session.close(!keepMedia);
   if (!keepMedia) releaseMedia();
+  // گفتگو به تماس گره خورده است: با پایان تماس، هیچ اثری از آن نمی‌ماند.
+  openChat(false);
+  clearChat();
 }
 
 /** پایان تماس فعلی و برگشت فوری به صف، بدون خاموش کردن دوربین. */
@@ -376,6 +382,119 @@ async function requeue(reason: string): Promise<void> {
     releaseMedia();
     showError('اتصال قطع شد', 'ارتباط با سرور برقرار نیست. دوباره تلاش کنید.');
   }
+}
+
+// ── گفتگوی متنی ─────────────────────────────────────────────────────────────
+// پیام‌ها فقط در حافظه‌ی همین صفحه‌اند: نه localStorage، نه سرور.
+const chatStore = new ChatStore();
+const chatLimiter = new SendLimiter();
+const chatPanel = $('chatPanel');
+const chatList = $('chatList');
+const chatEmpty = $('chatEmpty');
+const chatInput = $<HTMLInputElement>('chatInput');
+const chatBadge = $('chatBadge');
+const btnChat = $<HTMLButtonElement>('btnChat');
+let unread = 0;
+
+function setUnread(count: number): void {
+  unread = Math.max(0, count);
+  chatBadge.textContent = String(Math.min(unread, 99));
+  chatBadge.hidden = unread === 0;
+}
+
+function formatTime(at: number): string {
+  try {
+    return new Date(at).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+/** پیام با textContent ساخته می‌شود، نه innerHTML — هیچ HTMLی از طرف مقابل اجرا نمی‌شود. */
+function appendMessage(message: ChatMessage): void {
+  chatEmpty.hidden = true;
+  const bubble = document.createElement('div');
+  bubble.className = `chat-msg ${message.mine ? 'mine' : 'theirs'}`;
+  bubble.textContent = message.text;
+
+  const time = document.createElement('span');
+  time.className = 'chat-time';
+  time.textContent = formatTime(message.at);
+  bubble.appendChild(time);
+
+  chatList.appendChild(bubble);
+
+  // حافظه سقف دارد؛ DOM هم باید همان سقف را داشته باشد.
+  const bubbles = chatList.querySelectorAll('.chat-msg');
+  for (let i = 0; i < bubbles.length - MAX_MESSAGES; i += 1) bubbles[i]?.remove();
+
+  chatList.scrollTop = chatList.scrollHeight;
+}
+
+/** پاک کردن کامل گفتگو — حافظه و صفحه، هر دو. */
+function clearChat(): void {
+  chatStore.clear();
+  chatLimiter.reset();
+  chatInput.value = '';
+  for (const el of [...chatList.querySelectorAll('.chat-msg')]) el.remove();
+  chatEmpty.hidden = false;
+  setUnread(0);
+}
+
+function openChat(open: boolean): void {
+  chatPanel.hidden = !open;
+  if (!open) return;
+  setUnread(0);
+  chatList.scrollTop = chatList.scrollHeight;
+  chatInput.focus();
+}
+
+btnChat.addEventListener('click', () => openChat(chatPanel.hidden));
+$('btnChatClose').addEventListener('click', () => openChat(false));
+
+$('chatForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = sanitize(chatInput.value);
+  if (!text || !call) return;
+  if (!chatLimiter.allow()) {
+    toast('کمی آرام‌تر — پیام‌ها را با فاصله بفرستید.');
+    return;
+  }
+  chatInput.value = '';
+
+  const id = newMessageId();
+  const added = chatStore.add({ id: `m:${id}`, text, mine: true });
+  if (added) appendMessage(added);
+
+  void call.sendChat(encode(id, text)).catch(() => {
+    toast('پیام فرستاده نشد؛ اتصال را بررسی کنید.');
+  });
+});
+
+function receiveChat(payload: Uint8Array): void {
+  const packet = decode(payload);
+  if (!packet) return; // بسته‌ی نامعتبر بی‌صدا دور انداخته می‌شود
+  // پیشوند فرستنده لازم است: بدون آن، طرف مقابل می‌توانست با فرستادن شناسه‌ی
+  // یکی از پیام‌های من، پیام بعدی خودم را «تکراری» و حذف‌شده جلوه دهد.
+  const added = chatStore.add({ id: `t:${packet.id}`, text: packet.text, mine: false });
+  if (!added) return;
+  appendMessage(added);
+  if (chatPanel.hidden) {
+    setUnread(unread + 1);
+    haptic('warning');
+  }
+}
+
+// کیبورد موبایل نباید روی کادر نوشتن بیفتد
+const viewport = window.visualViewport;
+if (viewport) {
+  const syncKeyboardInset = (): void => {
+    const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+    document.documentElement.style.setProperty('--kb', `${Math.round(inset)}px`);
+  };
+  viewport.addEventListener('resize', syncKeyboardInset);
+  viewport.addEventListener('scroll', syncKeyboardInset);
+  syncKeyboardInset();
 }
 
 // ── کنترل کیفیت ─────────────────────────────────────────────────────────────

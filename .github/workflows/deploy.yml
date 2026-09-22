@@ -1,0 +1,153 @@
+name: استقرار روی سرور
+
+on:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'استقرار کامل (نصب داکر، ساخت .env، تنظیم ufw) — بار اول لازم است'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+      - claude/anonymous-video-call-mvp-qb1wwg
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+
+# دو استقرار هم‌زمان روی یک سرور انجام نشود
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: استقرار
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      REMOTE_DIR: /opt/anon-video
+      SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+      SSH_USER: ${{ secrets.DEPLOY_USER }}
+      SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+
+    steps:
+      - name: دریافت کد
+        uses: actions/checkout@v4
+
+      - name: بررسی وجود Secrets
+        env:
+          S_HOST: ${{ secrets.DEPLOY_HOST }}
+          S_USER: ${{ secrets.DEPLOY_USER }}
+          S_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          missing=""
+          [ -n "$S_HOST" ] || missing="$missing DEPLOY_HOST"
+          [ -n "$S_USER" ] || missing="$missing DEPLOY_USER"
+          [ -n "$S_KEY" ]  || missing="$missing DEPLOY_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::این Secretها تنظیم نشده‌اند:$missing — راهنما: docs/DEPLOY-GITHUB-ACTIONS.md"
+            exit 1
+          fi
+          echo "همه‌ی Secretهای لازم موجودند."
+
+      - name: آماده‌سازی کلید SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+            echo "اثر انگشت سرور از Secret خوانده شد."
+          else
+            echo "::warning::DEPLOY_KNOWN_HOSTS تنظیم نشده — کلید میزبان بدون تأیید پذیرفته می‌شود (در برابر MITM آسیب‌پذیر است)."
+            ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host target
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ServerAliveInterval 30
+            ServerAliveCountMax 10
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: آماده‌سازی سرور
+        run: |
+          ssh target 'bash -seo pipefail' <<'EOF'
+            if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo -n"; fi
+            command -v rsync >/dev/null 2>&1 || {
+              echo "نصب rsync…"
+              $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+              $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync
+            }
+            $SUDO mkdir -p /opt/anon-video
+            [ "$(id -u)" = "0" ] || $SUDO chown "$(id -u):$(id -g)" /opt/anon-video
+            echo "سرور آماده است: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}")"
+          EOF
+
+      - name: همگام‌سازی کد با سرور
+        run: |
+          # .env و volumeهای داکر روی سرور دست‌نخورده می‌مانند
+          rsync -az --delete \
+            --exclude='.git/' \
+            --exclude='.env' \
+            --exclude='node_modules/' \
+            --exclude='dist/' \
+            --exclude='caddy_data/' \
+            --exclude='caddy_config/' \
+            -e 'ssh' \
+            ./ "target:$REMOTE_DIR/"
+          ssh target "chmod +x '$REMOTE_DIR/deploy.sh' '$REMOTE_DIR/scripts/'*.sh"
+
+      - name: استقرار
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'chat.onlane.top' }}
+          TURN_HOST: ${{ vars.TURN_HOST || 'turn.onlane.top' }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL || '' }}
+          FULL: ${{ inputs.full || 'false' }}
+        run: |
+          # مقادیر حساس از طریق stdin می‌روند تا در ps سرور دیده نشوند
+          {
+            if [ -n "$BOT_TOKEN" ]; then
+              printf 'export TELEGRAM_BOT_TOKEN=%q\n' "$BOT_TOKEN"
+            fi
+            if [ -n "$ACME_EMAIL" ]; then
+              printf 'export ACME_EMAIL=%q\n' "$ACME_EMAIL"
+            fi
+            printf 'export PUBLIC_HOST=%q\n' "$PUBLIC_HOST"
+            printf 'export TURN_HOST=%q\n'   "$TURN_HOST"
+            printf 'export FORCE_FULL=%q\n'  "$FULL"
+            printf 'cd %q\n'                 "$REMOTE_DIR"
+            printf 'exec bash scripts/remote-deploy.sh\n'
+          } | ssh target 'bash -s'
+
+      - name: بررسی نهایی
+        if: success()
+        env:
+          PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'chat.onlane.top' }}
+        run: |
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$PUBLIC_HOST/" || echo 000)"
+          echo "https://$PUBLIC_HOST/ → $code"
+          if [ "$code" != "200" ]; then
+            echo "::warning::سایت هنوز ۲۰۰ برنگرداند. اگر استقرار تازه است، صدور گواهی Let's Encrypt ممکن است تا یکی دو دقیقه طول بکشد."
+          fi
+          echo "### ✅ استقرار انجام شد" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- سایت: https://$PUBLIC_HOST (پاسخ: \`$code\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- کامیت: \`${GITHUB_SHA:0:7}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: پاک‌سازی کلید
+        if: always()
+        run: rm -f ~/.ssh/id_deploy ~/.ssh/config

@@ -92,6 +92,11 @@
 
 ## نصب سریع
 
+دو راه وجود دارد:
+
+- **الف) دستی روی سرور** (پایین) — سریع‌ترین راه برای بار اول
+- **ب) خودکار با GitHub Actions** — راهنما: [`docs/DEPLOY-GITHUB-ACTIONS.md`](docs/DEPLOY-GITHUB-ACTIONS.md)
+
 ```bash
 git clone <آدرس-ریپو> anon-video
 cd anon-video

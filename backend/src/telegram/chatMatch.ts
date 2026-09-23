@@ -5,9 +5,22 @@
  * باشد. همه‌چیز در حافظه است: نه دیتابیس، نه فایل، نه لاگ محتوا.
  */
 
-/** نگاشت شناسه‌ی پیام‌ها تا «پاسخ به پیام» بین دو طرف کار کند. */
+interface RelayEntry {
+  /** شناسه‌ی متناظر همین پیام در چت طرف مقابل. */
+  peer: number;
+  /**
+   * آیا این پیام را خودِ صاحبِ آن چت فرستاده؟
+   *
+   * لازم است چون «حذف برای همه» فقط باید روی پیام‌های خودِ کاربر کار کند.
+   * بدون این، کاربر می‌توانست با reply زدن روی پیامِ رسیده، پیام طرف مقابل
+   * را از چت او پاک کند.
+   */
+  original: boolean;
+}
+
+/** نگاشت شناسه‌ی پیام‌ها تا «پاسخ به پیام» و «حذف» بین دو طرف کار کند. */
 export class RelayMap {
-  private readonly map = new Map<string, number>();
+  private readonly map = new Map<string, RelayEntry>();
   private readonly order: string[] = [];
 
   constructor(private readonly max = 400) {}
@@ -25,11 +38,11 @@ export class RelayMap {
    * هر دو جهت ثبت می‌شود تا پاسخ از هر طرف پیدا شود.
    */
   remember(fromChat: number, from: number, toChat: number, to: number): void {
-    this.set(RelayMap.key(fromChat, from), to);
-    this.set(RelayMap.key(toChat, to), from);
+    this.set(RelayMap.key(fromChat, from), { peer: to, original: true });
+    this.set(RelayMap.key(toChat, to), { peer: from, original: false });
   }
 
-  private set(key: string, value: number): void {
+  private set(key: string, value: RelayEntry): void {
     if (!this.map.has(key)) this.order.push(key);
     this.map.set(key, value);
     // سقف حافظه؛ قدیمی‌ترین نگاشت‌ها کنار می‌روند
@@ -41,7 +54,12 @@ export class RelayMap {
 
   /** شناسه‌ی متناظر همین پیام در چت طرف مقابل. */
   lookup(chatId: number, messageId: number): number | undefined {
-    return this.map.get(RelayMap.key(chatId, messageId));
+    return this.map.get(RelayMap.key(chatId, messageId))?.peer;
+  }
+
+  /** آیا این پیام را خودِ صاحب همین چت فرستاده (نه کپیِ ربات)؟ */
+  isOriginal(chatId: number, messageId: number): boolean {
+    return this.map.get(RelayMap.key(chatId, messageId))?.original === true;
   }
 
   clear(): void {

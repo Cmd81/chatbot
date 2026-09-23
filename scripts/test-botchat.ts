@@ -123,7 +123,29 @@ console.log('\n۵) نگاشت پاسخ‌ها:');
   check('clear همه را پاک می‌کند', relay.size === 0 && relay.lookup(100, 1019) === undefined);
 }
 
-console.log('\n۶) جدا بودن کاربران:');
+console.log('\n۶) جهت پیام — پایه‌ی امنیتِ حذف:');
+{
+  const relay = new RelayMap();
+  // کاربر ۱۰۰ پیام ۱۱ را فرستاد؛ ربات آن را در چت ۲۰۰ با شناسه‌ی ۲۱ کپی کرد
+  relay.remember(100, 11, 200, 21);
+
+  check('پیام خودِ فرستنده «اصل» است', relay.isOriginal(100, 11) === true);
+  check('کپیِ ربات در چت گیرنده «اصل» نیست', relay.isOriginal(200, 21) === false);
+  check('پیام ناشناخته اصل حساب نمی‌شود', relay.isOriginal(100, 999) === false);
+
+  // سناریوی سوءاستفاده: گیرنده روی پیامِ رسیده /del بزند
+  // باید رد شود، وگرنه می‌توانست پیام طرف مقابل را از چت او پاک کند.
+  check(
+    'گیرنده نمی‌تواند پیام طرف مقابل را حذف کند',
+    relay.isOriginal(200, 21) === false && relay.lookup(200, 21) === 11,
+  );
+
+  // جهت در دو طرف قاطی نمی‌شود
+  relay.remember(200, 30, 100, 40);
+  check('هر طرف فقط پیام‌های خودش را اصل دارد', relay.isOriginal(200, 30) === true && relay.isOriginal(100, 40) === false);
+}
+
+console.log('\n۷) جدا بودن کاربران:');
 {
   const mm = new BotMatchmaker();
   mm.join(1);

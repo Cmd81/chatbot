@@ -38,14 +38,61 @@ const HELP_TEXT = [
   '/chat — پیدا کردن هم‌صحبت',
   '/next — رفتن سراغ نفر بعدی',
   '/stop — پایان چت',
+  '/del — حذف پیام (روی پیام خودت reply بزن)',
   '',
   '• نام، شماره و آی‌دی تلگرام تو به طرف مقابل نشان داده نمی‌شود.',
   '• پیام‌ها روی سرور ما ذخیره نمی‌شوند.',
   '• می‌توانی روی پیام طرف مقابل reply بزنی؛ درست منتقل می‌شود.',
+  '• ویرایش پیام خودکار به طرف مقابل هم اعمال می‌شود.',
+  '• حذف با دکمه‌ی خود تلگرام به طرف مقابل نمی‌رسد — تلگرام این را به ربات',
+  '  خبر نمی‌دهد. به‌جایش روی پیامت reply بزن و /del بفرست.',
 ].join('\n');
 
 function videoKeyboard(): InlineKeyboard {
   return new InlineKeyboard().webApp('📹 شروع تماس تصویری ناشناس', config.publicUrl);
+}
+
+// ── بافر آلبوم ──────────────────────────────────────────────────────────────
+/**
+ * وقتی کاربر چند عکس را با هم انتخاب و ارسال می‌کند، تلگرام آن‌ها را به‌صورت
+ * چند آپدیت جدا با یک `media_group_id` مشترک می‌فرستد. اگر تک‌تک کپی شوند،
+ * طرف مقابل چند پیام جدا می‌بیند نه یک آلبوم. پس کمی صبر می‌کنیم تا همه‌ی
+ * اعضای گروه برسند و بعد با copyMessages یکجا می‌فرستیم.
+ */
+const ALBUM_WAIT_MS = 700;
+
+interface PendingAlbum {
+  chatId: number;
+  messageIds: number[];
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const albums = new Map<string, PendingAlbum>();
+
+function albumKey(chatId: number, groupId: string): string {
+  return `${chatId}:${groupId}`;
+}
+
+async function flushAlbum(ctx: Context, key: string): Promise<void> {
+  const pending = albums.get(key);
+  if (!pending) return;
+  albums.delete(key);
+
+  const session = botChat.sessionOf(pending.chatId);
+  if (!session) return; // چت در این فاصله تمام شده
+  const partner = session.a === pending.chatId ? session.b : session.a;
+
+  // تلگرام شناسه‌ها را به‌صورت اکیداً صعودی می‌خواهد
+  const ids = [...new Set(pending.messageIds)].sort((x, y) => x - y);
+  try {
+    const copied = await ctx.api.copyMessages(partner, pending.chatId, ids);
+    copied.forEach((item, i) => {
+      const source = ids[i];
+      if (source !== undefined) session.relay.remember(pending.chatId, source, partner, item.message_id);
+    });
+  } catch (err) {
+    log.warn('album relay failed', { err: String(err) });
+  }
 }
 
 // ── کمک‌کارها ───────────────────────────────────────────────────────────────
@@ -195,6 +242,84 @@ export function createBot(): Bot | null {
     }
   });
 
+  /**
+   * حذف پیام برای هر دو طرف.
+   *
+   * تلگرام هیچ آپدیتی برای «کاربر پیامی را پاک کرد» به ربات نمی‌دهد، پس
+   * ربات نمی‌تواند حذف را خودکار تشخیص دهد. این دستور جایگزین صریح آن است:
+   * روی پیام خودت reply بزن و /del بفرست.
+   */
+  bot.command('del', async (ctx) => {
+    if (ctx.chat.type !== 'private') return;
+    const chatId = ctx.chat.id;
+    const message = ctx.message;
+    const session = botChat.sessionOf(chatId);
+    const replied = message?.reply_to_message?.message_id;
+
+    if (!message || !session || replied === undefined) {
+      await ctx.reply('برای حذف، روی پیام خودت reply بزن و /del بفرست.');
+      return;
+    }
+
+    // فقط پیام‌های خودِ کاربر؛ وگرنه می‌شد پیام طرف مقابل را از چت او پاک کرد.
+    if (!session.relay.isOriginal(chatId, replied)) {
+      await ctx.reply('فقط پیام‌های خودت را می‌توانی حذف کنی.');
+      return;
+    }
+
+    const partner = session.a === chatId ? session.b : session.a;
+    const target = session.relay.lookup(chatId, replied);
+    const drop = async (chat: number, message: number): Promise<boolean> => {
+      try {
+        await ctx.api.deleteMessage(chat, message);
+        return true;
+      } catch (err) {
+        log.debug('delete failed', { err: String(err) });
+        return false;
+      }
+    };
+
+    const removedThere = target === undefined ? false : await drop(partner, target);
+    await drop(chatId, replied);
+    await drop(chatId, message.message_id);
+
+    if (!removedThere) {
+      // تلگرام اجازه‌ی حذف پیام قدیمی‌تر از ۴۸ ساعت را نمی‌دهد
+      await ctx.reply('پیام از سمت تو پاک شد، ولی از سمت طرف مقابل نه (احتمالاً قدیمی‌تر از ۴۸ ساعت بوده).');
+    }
+  });
+
+  // ── ویرایش پیام ───────────────────────────────────────────────────────────
+  bot.on('edited_message', async (ctx) => {
+    if (ctx.chat.type !== 'private') return;
+    const chatId = ctx.chat.id;
+    const session = botChat.sessionOf(chatId);
+    if (!session) return;
+
+    const edited = ctx.editedMessage;
+    const target = session.relay.lookup(chatId, edited.message_id);
+    if (target === undefined) return;
+    const partner = session.a === chatId ? session.b : session.a;
+
+    try {
+      if (typeof edited.text === 'string') {
+        await ctx.api.editMessageText(partner, target, edited.text, {
+          ...(edited.entities ? { entities: edited.entities } : {}),
+        });
+      } else if (typeof edited.caption === 'string') {
+        await ctx.api.editMessageCaption(partner, target, {
+          caption: edited.caption,
+          ...(edited.caption_entities ? { caption_entities: edited.caption_entities } : {}),
+        });
+      }
+    } catch (err) {
+      const description = err instanceof GrammyError ? err.description : String(err);
+      // «تغییری نکرده» و «خیلی قدیمی» خطای واقعی نیستند
+      if (description.includes('not modified')) return;
+      log.warn('edit relay failed', { err: description });
+    }
+  });
+
   // ── بازپخش پیام‌ها ────────────────────────────────────────────────────────
   bot.on('message', async (ctx) => {
     if (ctx.chat.type !== 'private') return;
@@ -230,6 +355,25 @@ export function createBot(): Bot | null {
     }
 
     const partner = session.a === chatId ? session.b : session.a;
+
+    // آلبوم (چند عکس/ویدیو با هم) باید یکجا منتقل شود
+    const groupId = ctx.message.media_group_id;
+    if (groupId) {
+      const key = albumKey(chatId, groupId);
+      const existing = albums.get(key);
+      if (existing) {
+        existing.messageIds.push(ctx.message.message_id);
+        clearTimeout(existing.timer);
+        existing.timer = setTimeout(() => void flushAlbum(ctx, key), ALBUM_WAIT_MS);
+      } else {
+        albums.set(key, {
+          chatId,
+          messageIds: [ctx.message.message_id],
+          timer: setTimeout(() => void flushAlbum(ctx, key), ALBUM_WAIT_MS),
+        });
+      }
+      return;
+    }
 
     // اگر کاربر روی پیامی reply زده، معادلش را در چت طرف مقابل پیدا می‌کنیم.
     const repliedTo = ctx.message.reply_to_message?.message_id;
@@ -298,6 +442,7 @@ export async function configureBotChrome(bot: Bot): Promise<void> {
     { command: 'chat', description: 'پیدا کردن هم‌صحبت برای چت ناشناس' },
     { command: 'next', description: 'رفتن سراغ نفر بعدی' },
     { command: 'stop', description: 'پایان چت' },
+    { command: 'del', description: 'حذف پیام برای هر دو طرف (روی پیام reply بزنید)' },
     { command: 'video', description: 'تماس تصویری ناشناس' },
     { command: 'help', description: 'راهنما' },
   ]);
@@ -330,7 +475,7 @@ export async function startBot(bot: Bot): Promise<void> {
     await bot.api.setWebhook(url, {
       secret_token: config.telegram.webhookSecret,
       drop_pending_updates: true,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'edited_message'],
     });
     log.info('telegram bot started (webhook)', { username: bot.botInfo.username });
   } catch (err) {

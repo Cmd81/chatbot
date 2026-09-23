@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 /**
  * مچ‌میکر چت متنی داخل خودِ ربات تلگرام (نه مینی‌اپ).
  *
@@ -89,6 +91,7 @@ export class RelayMap {
 
 /** گفتگوی تمام‌شده‌ای که هنوز می‌شود پاکش کرد. */
 export interface EndedSession {
+  id: string;
   a: number;
   b: number;
   relay: RelayMap;
@@ -96,6 +99,8 @@ export interface EndedSession {
 }
 
 export interface ChatSession {
+  /** شناسه‌ی کوتاه گفتگو؛ در callback_data دکمه‌ی اینلاین می‌رود. */
+  id: string;
   a: number;
   b: number;
   relay: RelayMap;
@@ -194,6 +199,7 @@ export class BotMatchmaker {
     }
 
     const session: ChatSession = {
+      id: randomUUID().slice(0, 8),
       a: partner,
       b: chatId,
       relay: new RelayMap(),
@@ -231,7 +237,13 @@ export class BotMatchmaker {
     // نگاشت پیام‌ها عمداً پاک نمی‌شود: بدون آن «پاک کردن کل گفتگو» غیرممکن
     // می‌شد، چون دیگر نمی‌دانستیم کدام پیامِ این چت با کدام پیامِ آن چت
     // متناظر است.
-    const ended: EndedSession = { a: session.a, b: session.b, relay: session.relay, endedAt: Date.now() };
+    const ended: EndedSession = {
+      id: session.id,
+      a: session.a,
+      b: session.b,
+      relay: session.relay,
+      endedAt: Date.now(),
+    };
     this.recent.set(session.a, ended);
     this.recent.set(session.b, ended);
     this.purgeRecent();

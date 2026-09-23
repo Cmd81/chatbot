@@ -22,7 +22,18 @@ import {
   probeDevice,
 } from './quality';
 import type { QualityMode, QualitySample } from './quality';
-import { ChatStore, MAX_MESSAGES, SendLimiter, decode, encode, newMessageId, sanitize } from './chat';
+import {
+  ChatStore,
+  MAX_MESSAGES,
+  SendLimiter,
+  TYPING_TIMEOUT_MS,
+  TypingThrottle,
+  decode,
+  encode,
+  encodeTyping,
+  newMessageId,
+  sanitize,
+} from './chat';
 import type { ChatMessage } from './chat';
 import { Signal } from './signal';
 import type { ServerMessage } from './protocol';
@@ -393,8 +404,35 @@ const chatList = $('chatList');
 const chatEmpty = $('chatEmpty');
 const chatInput = $<HTMLInputElement>('chatInput');
 const chatBadge = $('chatBadge');
+const chatTyping = $('chatTyping');
 const btnChat = $<HTMLButtonElement>('btnChat');
+const typingThrottle = new TypingThrottle();
 let unread = 0;
+let typingHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** نشانگر «در حال نوشتن» طرف مقابل. */
+function showPartnerTyping(on: boolean): void {
+  if (typingHideTimer) {
+    clearTimeout(typingHideTimer);
+    typingHideTimer = null;
+  }
+  chatTyping.hidden = !on;
+  if (!on) return;
+  chatList.scrollTop = chatList.scrollHeight;
+  // اگر بسته‌ی «تمام شد» گم شود، نشانگر نباید برای همیشه بماند.
+  typingHideTimer = setTimeout(() => {
+    chatTyping.hidden = true;
+    typingHideTimer = null;
+  }, TYPING_TIMEOUT_MS);
+}
+
+/** اعلام وضعیت تایپ خودمان (lossy — گم شدنش مهم نیست). */
+function sendTyping(on: boolean): void {
+  if (!call) return;
+  void call.sendChat(encodeTyping(on), false).catch(() => {
+    /* بی‌اهمیت */
+  });
+}
 
 function setUnread(count: number): void {
   unread = Math.max(0, count);
@@ -435,6 +473,8 @@ function appendMessage(message: ChatMessage): void {
 function clearChat(): void {
   chatStore.clear();
   chatLimiter.reset();
+  typingThrottle.reset();
+  showPartnerTyping(false);
   chatInput.value = '';
   for (const el of [...chatList.querySelectorAll('.chat-msg')]) el.remove();
   chatEmpty.hidden = false;
@@ -449,8 +489,29 @@ function openChat(open: boolean): void {
   chatInput.focus();
 }
 
-btnChat.addEventListener('click', () => openChat(chatPanel.hidden));
-$('btnChatClose').addEventListener('click', () => openChat(false));
+chatInput.addEventListener('input', () => {
+  if (chatInput.value.trim().length === 0) {
+    typingThrottle.reset();
+    sendTyping(false);
+    return;
+  }
+  if (typingThrottle.shouldSend()) sendTyping(true);
+});
+
+// بستن پنل یعنی دیگر نمی‌نویسیم
+btnChat.addEventListener('click', () => {
+  const opening = chatPanel.hidden;
+  if (!opening) {
+    typingThrottle.reset();
+    sendTyping(false);
+  }
+  openChat(opening);
+});
+$('btnChatClose').addEventListener('click', () => {
+  typingThrottle.reset();
+  sendTyping(false);
+  openChat(false);
+});
 
 $('chatForm').addEventListener('submit', (event) => {
   event.preventDefault();
@@ -461,6 +522,8 @@ $('chatForm').addEventListener('submit', (event) => {
     return;
   }
   chatInput.value = '';
+  typingThrottle.reset();
+  sendTyping(false);
 
   const id = newMessageId();
   const added = chatStore.add({ id: `m:${id}`, text, mine: true });
@@ -474,6 +537,15 @@ $('chatForm').addEventListener('submit', (event) => {
 function receiveChat(payload: Uint8Array): void {
   const packet = decode(payload);
   if (!packet) return; // بسته‌ی نامعتبر بی‌صدا دور انداخته می‌شود
+
+  if (packet.kind === 'typing') {
+    showPartnerTyping(packet.on);
+    return;
+  }
+
+  // رسیدن پیام یعنی تایپ تمام شده
+  showPartnerTyping(false);
+
   // پیشوند فرستنده لازم است: بدون آن، طرف مقابل می‌توانست با فرستادن شناسه‌ی
   // یکی از پیام‌های من، پیام بعدی خودم را «تکراری» و حذف‌شده جلوه دهد.
   const added = chatStore.add({ id: `t:${packet.id}`, text: packet.text, mine: false });

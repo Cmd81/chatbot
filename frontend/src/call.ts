@@ -193,9 +193,13 @@ export class CallSession {
     }
   }
 
-  /** ارسال پیام گفتگو روی کانال داده (reliable تا پیامی گم نشود). */
-  async sendChat(payload: ChatPayload): Promise<void> {
-    await this.room.localParticipant.publishData(payload, { reliable: true, topic: CHAT_TOPIC });
+  /**
+   * ارسال روی کانال داده.
+   * @param reliable پیام‌های متنی باید reliable باشند؛ بسته‌ی «در حال نوشتن»
+   * موقتی است و اگر گم شود اهمیتی ندارد، پس lossy فرستاده می‌شود.
+   */
+  async sendChat(payload: ChatPayload, reliable = true): Promise<void> {
+    await this.room.localParticipant.publishData(payload, { reliable, topic: CHAT_TOPIC });
   }
 
   /** مرورگرها گاهی پخش صدا را تا اولین لمس کاربر بلاک می‌کنند. */

@@ -2,7 +2,18 @@
  * تست منطق گفتگو (بدون مرورگر).
  *   cd frontend && npm run test:chat
  */
-import { ChatStore, MAX_MESSAGES, MAX_TEXT_LENGTH, SendLimiter, decode, encode, sanitize } from '../frontend/src/chat';
+import {
+  ChatStore,
+  MAX_MESSAGES,
+  MAX_TEXT_LENGTH,
+  SendLimiter,
+  TYPING_PING_MS,
+  TypingThrottle,
+  decode,
+  encode,
+  encodeTyping,
+  sanitize,
+} from '../frontend/src/chat';
 
 let passed = 0;
 const failures: string[] = [];
@@ -35,7 +46,7 @@ check(`متن بلندتر از ${MAX_TEXT_LENGTH} بریده می‌شود`, sa
 console.log('\n۲) بسته‌بندی روی کانال داده:');
 {
   const round = decode(encode('abc', 'سلام'));
-  check('رفت و برگشت سالم است', round?.id === 'abc' && round?.text === 'سلام');
+  check('رفت و برگشت سالم است', round?.kind === 'msg' && round.id === 'abc' && round.text === 'سلام');
 }
 check('بسته‌ی خراب رد می‌شود', decode(new TextEncoder().encode('}{ not json')) === null);
 check('نوع ناشناخته رد می‌شود', decode(new TextEncoder().encode('{"t":"evil","text":"x"}')) === null);
@@ -43,9 +54,27 @@ check('بسته‌ی بدون متن رد می‌شود', decode(new TextEncoder
 check('متن دریافتی هم پاک‌سازی می‌شود', decode(encode('a', 'x‭y'))?.text === 'xy');
 {
   const noisy = decode(new TextEncoder().encode(JSON.stringify({ t: 'msg', id: 'x'.repeat(200), text: 'hi' })));
-  check('شناسه‌ی بیش از حد بلند با شناسه‌ی تازه جایگزین می‌شود', noisy !== null && noisy.id.length <= 64, String(noisy?.id.length));
+  check('شناسه‌ی بیش از حد بلند با شناسه‌ی تازه جایگزین می‌شود', noisy?.kind === 'msg' && noisy.id.length <= 64);
 }
-check('HTML به‌عنوان متن خام می‌ماند (در UI با textContent درج می‌شود)', decode(encode('a', '<img src=x onerror=alert(1)>'))?.text === '<img src=x onerror=alert(1)>');
+{
+  const html = decode(encode('a', '<img src=x onerror=alert(1)>'));
+  check(
+    'HTML به‌عنوان متن خام می‌ماند (در UI با textContent درج می‌شود)',
+    html?.kind === 'msg' && html.text === '<img src=x onerror=alert(1)>',
+  );
+}
+
+console.log('\n۲.۱) بسته‌ی «در حال نوشتن»:');
+{
+  const on = decode(encodeTyping(true));
+  const off = decode(encodeTyping(false));
+  check('روشن و خاموش هر دو رمزگشایی می‌شوند', on?.kind === 'typing' && on.on === true && off?.kind === 'typing' && off.on === false);
+  check('بسته‌ی تایپ هیچ متنی حمل نمی‌کند', !JSON.parse(new TextDecoder().decode(encodeTyping(true))).text);
+  const weird = decode(new TextEncoder().encode('{"t":"typing"}'));
+  check('نبود فیلد on یعنی خاموش', weird?.kind === 'typing' && weird.on === false);
+  const notBool = decode(new TextEncoder().encode('{"t":"typing","on":"yes"}'));
+  check('مقدار غیربولی روشن حساب نمی‌شود', notBool?.kind === 'typing' && notBool.on === false);
+}
 
 console.log('\n۳) نگهدارنده‌ی پیام‌ها:');
 {
@@ -76,6 +105,17 @@ console.log('\n۴) محدودیت ارسال:');
   check('بعد از پایان بازه دوباره مجاز است', limiter.allow(t0 + 1500));
   limiter.reset();
   check('reset شمارنده را صفر می‌کند', limiter.allow(t0 + 1600) && limiter.allow(t0 + 1601));
+}
+
+console.log('\n۵) تنظیم نرخ «در حال نوشتن»:');
+{
+  const throttle = new TypingThrottle();
+  const t0 = 50_000;
+  check('اولین ضربه بسته می‌فرستد', throttle.shouldSend(t0));
+  check('ضربه‌های پشت سر هم بسته نمی‌فرستند', !throttle.shouldSend(t0 + 100) && !throttle.shouldSend(t0 + 500));
+  check(`بعد از ${TYPING_PING_MS}ms دوباره می‌فرستد`, throttle.shouldSend(t0 + TYPING_PING_MS));
+  throttle.reset();
+  check('reset اجازه‌ی ارسال فوری می‌دهد', throttle.shouldSend(t0 + TYPING_PING_MS + 10));
 }
 
 console.log(`\n${'─'.repeat(52)}`);

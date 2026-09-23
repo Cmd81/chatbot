@@ -23,11 +23,20 @@ export interface ChatMessage {
   at: number;
 }
 
-interface WirePacket {
-  t: 'msg';
-  id: string;
-  text: string;
-}
+type WirePacket =
+  | { t: 'msg'; id: string; text: string }
+  /** بسته‌ی «در حال نوشتن» هیچ محتوایی ندارد و lossy فرستاده می‌شود. */
+  | { t: 'typing'; on: boolean };
+
+/** چیزی که از طرف مقابل می‌رسد. */
+export type Incoming =
+  | { kind: 'msg'; id: string; text: string }
+  | { kind: 'typing'; on: boolean };
+
+/** فاصله‌ی ارسال بسته‌ی «در حال نوشتن» هنگام تایپ پیوسته. */
+export const TYPING_PING_MS = 2_000;
+/** اگر این مدت بسته‌ی تازه‌ای نرسید، نشانگر خودش پنهان می‌شود. */
+export const TYPING_TIMEOUT_MS = 4_500;
 
 // کاراکترهای کنترلی (به‌جز \n و \t) ظاهر پیام را خراب می‌کنند
 const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
@@ -49,13 +58,20 @@ export function newMessageId(): string {
 /** LiveKit بافر اشتراکی نمی‌پذیرد، پس نوع دقیق لازم است. */
 export type ChatPayload = Uint8Array<ArrayBuffer>;
 
-export function encode(id: string, text: string): ChatPayload {
-  const packet: WirePacket = { t: 'msg', id, text };
+function pack(packet: WirePacket): ChatPayload {
   return new TextEncoder().encode(JSON.stringify(packet)) as ChatPayload;
 }
 
+export function encode(id: string, text: string): ChatPayload {
+  return pack({ t: 'msg', id, text });
+}
+
+export function encodeTyping(on: boolean): ChatPayload {
+  return pack({ t: 'typing', on });
+}
+
 /** رمزگشایی بسته‌ی دریافتی. هر چیز نامعتبر بی‌صدا دور انداخته می‌شود. */
-export function decode(payload: Uint8Array): { id: string; text: string } | null {
+export function decode(payload: Uint8Array): Incoming | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder().decode(payload));
@@ -63,14 +79,43 @@ export function decode(payload: Uint8Array): { id: string; text: string } | null
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const packet = parsed as Partial<WirePacket>;
+  const packet = parsed as { t?: unknown; id?: unknown; text?: unknown; on?: unknown };
+
+  if (packet.t === 'typing') {
+    return { kind: 'typing', on: packet.on === true };
+  }
+
   if (packet.t !== 'msg') return null;
 
   const text = sanitize(packet.text);
   if (!text) return null;
 
-  const id = typeof packet.id === 'string' && packet.id.length > 0 && packet.id.length <= 64 ? packet.id : newMessageId();
-  return { id, text };
+  const id =
+    typeof packet.id === 'string' && packet.id.length > 0 && packet.id.length <= 64
+      ? packet.id
+      : newMessageId();
+  return { kind: 'msg', id, text };
+}
+
+/**
+ * تنظیم نرخ ارسال بسته‌ی «در حال نوشتن».
+ * بدون این، هر ضربه‌ی کیبورد یک بسته می‌فرستاد.
+ */
+export class TypingThrottle {
+  private lastSent = 0;
+
+  constructor(private readonly intervalMs = TYPING_PING_MS) {}
+
+  shouldSend(now = Date.now()): boolean {
+    if (now - this.lastSent < this.intervalMs) return false;
+    this.lastSent = now;
+    return true;
+  }
+
+  /** بعد از ارسال پیام یا خالی شدن کادر، شمارنده صفر می‌شود. */
+  reset(): void {
+    this.lastSent = 0;
+  }
 }
 
 /**

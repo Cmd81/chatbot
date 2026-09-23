@@ -89,7 +89,9 @@ console.log('\n۳) پایان و لغو:');
   const s = mm.sessionOf(10);
   s?.relay.remember(10, 5, 20, 7);
   mm.end(20);
-  check('نگاشت پیام‌ها با پایان چت پاک می‌شود', s?.relay.size === 0);
+  // نگاشت عمداً زنده می‌ماند: بدون آن «پاک کردن کل گفتگو» غیرممکن می‌شد.
+  check('نگاشت پیام‌ها بعد از پایان چت زنده می‌ماند', (s?.relay.size ?? 0) > 0);
+  check('و فقط با پاک کردن گفتگو از بین می‌رود', (mm.forgetRecent(10), s?.relay.size) === 0);
 }
 
 console.log('\n۴) «نفر بعدی»:');
@@ -156,6 +158,51 @@ console.log('\n۷) جدا بودن کاربران:');
   check('هیچ‌کس با فرد اشتباهی جفت نشد', mm.partnerOf(1) === 2 && mm.partnerOf(3) === 4);
   mm.end(1);
   check('پایان یک چت به چت دیگر کاری ندارد', mm.partnerOf(3) === 4 && mm.stats().chats === 1);
+}
+
+console.log('\n۸) پاک کردن کل گفتگو بعد از پایان چت:');
+{
+  const mm = new BotMatchmaker();
+  mm.join(500);
+  mm.join(600);
+  const session = mm.sessionOf(500)!;
+
+  // چند پیام رد و بدل شده: ۵۰۰ دو تا فرستاده، ۶۰۰ یکی
+  session.relay.remember(500, 1, 600, 101);
+  session.relay.remember(500, 2, 600, 102);
+  session.relay.remember(600, 50, 500, 900);
+
+  mm.end(500);
+  check('بعد از پایان چت، گفتگو هنوز قابل پاک کردن است', mm.recentOf(500) !== null);
+  check('طرف مقابل هم به همان گفتگو دسترسی دارد', mm.recentOf(600) !== null);
+  check('هر دو به یک رکورد اشاره می‌کنند', mm.recentOf(500) === mm.recentOf(600));
+
+  const byChat = mm.recentOf(500)!.relay.idsByChat();
+  const mine = [...(byChat.get(500) ?? [])].sort((a, b) => a - b);
+  const theirs = [...(byChat.get(600) ?? [])].sort((a, b) => a - b);
+  check('همه‌ی پیام‌های چت اول فهرست می‌شوند', JSON.stringify(mine) === JSON.stringify([1, 2, 900]), JSON.stringify(mine));
+  check('همه‌ی پیام‌های چت دوم فهرست می‌شوند', JSON.stringify(theirs) === JSON.stringify([50, 101, 102]), JSON.stringify(theirs));
+
+  mm.forgetRecent(600);
+  check('بعد از پاک کردن، رکورد برای هر دو طرف می‌رود', mm.recentOf(500) === null && mm.recentOf(600) === null);
+}
+
+console.log('\n۹) چت تازه، رکورد قبلی را جایگزین می‌کند:');
+{
+  const mm = new BotMatchmaker();
+  mm.join(1); mm.join(2);
+  mm.sessionOf(1)!.relay.remember(1, 10, 2, 20);
+  mm.end(1);
+  const first = mm.recentOf(1);
+
+  mm.join(1); mm.join(3);
+  mm.sessionOf(1)!.relay.remember(1, 11, 3, 30);
+  mm.end(1);
+  const second = mm.recentOf(1);
+
+  check('آخرین گفتگو جایگزین قبلی می‌شود', second !== null && second !== first);
+  check('رکورد تازه مربوط به طرف جدید است', second!.a === 1 && second!.b === 3);
+  check('طرف قدیمی دیگر دسترسی ندارد', mm.recentOf(2) !== null && mm.recentOf(2) === first);
 }
 
 console.log(`\n${'─'.repeat(52)}`);

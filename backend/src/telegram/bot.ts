@@ -14,9 +14,12 @@ const BTN_CANCEL = '✖️ لغو جست‌وجو';
 const BTN_NEXT = '⏭ نفر بعدی';
 const BTN_STOP = '⛔️ پایان چت';
 const BTN_UNSEND = '🗑 حذف آخرین';
-const BUTTONS = new Set([BTN_FIND, BTN_CANCEL, BTN_NEXT, BTN_STOP, BTN_UNSEND]);
+const BTN_WIPE = '🧹 پاک کردن کل گفتگو';
+const BUTTONS = new Set([BTN_FIND, BTN_CANCEL, BTN_NEXT, BTN_STOP, BTN_UNSEND, BTN_WIPE]);
 
 const kbIdle = new Keyboard().text(BTN_FIND).resized().persistent();
+/** بعد از پایان چت: هم می‌شود نفر بعدی را پیدا کرد، هم گفتگوی قبلی را پاک کرد. */
+const kbEnded = new Keyboard().text(BTN_FIND).row().text(BTN_WIPE).resized().persistent();
 const kbWaiting = new Keyboard().text(BTN_CANCEL).resized().persistent();
 const kbChatting = new Keyboard().text(BTN_NEXT).text(BTN_STOP).row().text(BTN_UNSEND).resized().persistent();
 
@@ -40,6 +43,7 @@ const HELP_TEXT = [
   '/chat — پیدا کردن هم‌صحبت',
   '/next — رفتن سراغ نفر بعدی',
   '/stop — پایان چت',
+  '/wipe — پاک کردن کل گفتگوی قبلی از هر دو طرف',
   '/del — حذف پیام (روی پیام خودت reply بزن)',
   '     یا دکمه‌ی «🗑 حذف آخرین» برای پاک کردن آخرین پیامت',
   '',
@@ -150,6 +154,7 @@ async function tell(ctx: Context, chatId: number, text: string, keyboard?: Keybo
 function keyboardFor(chatId: number): Keyboard {
   if (botChat.isChatting(chatId)) return kbChatting;
   if (botChat.isWaiting(chatId)) return kbWaiting;
+  if (botChat.recentOf(chatId)) return kbEnded;
   return kbIdle;
 }
 
@@ -257,6 +262,54 @@ async function unsend(ctx: Context, chatId: number, messageId: number, commandId
   }
 }
 
+/**
+ * پاک کردن کل گفتگوی تازه‌تمام‌شده از **هر دو** چت.
+ *
+ * برای این کار نگاشت شناسه‌ی پیام‌ها بعد از پایان چت نگه داشته می‌شود؛ وگرنه
+ * دیگر نمی‌دانستیم کدام پیام در چت طرف مقابل متناظر کدام پیام است.
+ */
+async function wipeConversation(ctx: Context, chatId: number): Promise<void> {
+  const ended = botChat.recentOf(chatId);
+  if (!ended) {
+    await ctx.reply('گفتگوی تازه‌ای برای پاک کردن پیدا نشد.', { reply_markup: keyboardFor(chatId) });
+    return;
+  }
+
+  const byChat = ended.relay.idsByChat();
+  let removed = 0;
+  let failed = 0;
+
+  for (const [chat, ids] of byChat) {
+    // تلگرام حداکثر ۱۰۰ شناسه در هر فراخوانی می‌پذیرد
+    for (let i = 0; i < ids.length; i += 100) {
+      const batch = ids.slice(i, i + 100);
+      try {
+        await ctx.api.deleteMessages(chat, batch);
+        removed += batch.length;
+      } catch {
+        // اگر حتی یک پیام دسته قابل حذف نباشد کل دسته رد می‌شود،
+        // پس تک‌تک دوباره تلاش می‌کنیم تا بقیه از دست نروند.
+        for (const id of batch) {
+          try {
+            await ctx.api.deleteMessage(chat, id);
+            removed += 1;
+          } catch {
+            failed += 1;
+          }
+        }
+      }
+    }
+  }
+
+  botChat.forgetRecent(chatId);
+
+  const lines = [`🧹 ${removed} پیام از هر دو طرف پاک شد.`];
+  if (failed > 0) lines.push(`${failed} پیام پاک نشد (احتمالاً قدیمی‌تر از ۴۸ ساعت بوده).`);
+  lines.push('دیگر هیچ اثری از این گفتگو روی سرور نمانده است.');
+  await ctx.reply(lines.join('\n'), { reply_markup: kbIdle });
+  log.info('conversation wiped', { removed, failed });
+}
+
 async function stopChat(ctx: Context, chatId: number, quiet = false): Promise<boolean> {
   const partner = botChat.end(chatId);
   if (partner === null) {
@@ -265,7 +318,12 @@ async function stopChat(ctx: Context, chatId: number, quiet = false): Promise<bo
     }
     return false;
   }
-  await tell(ctx, partner, '👋 طرف مقابل چت را ترک کرد.\nبرای پیدا کردن یک نفر دیگر دکمه‌ی زیر را بزنید.', kbIdle);
+  await tell(
+    ctx,
+    partner,
+    '👋 طرف مقابل چت را ترک کرد.\n\nمی‌توانی نفر بعدی را پیدا کنی، یا با «🧹 پاک کردن کل گفتگو» همه‌ی پیام‌های این چت را از هر دو طرف پاک کنی.',
+    kbEnded,
+  );
   log.info('bot chat ended', botChat.stats());
   return true;
 }
@@ -319,8 +377,13 @@ export function createBot(): Bot | null {
       return;
     }
     if (await stopChat(ctx, chatId)) {
-      await ctx.reply('چت تمام شد.', { reply_markup: kbIdle });
+      await ctx.reply('چت تمام شد.', { reply_markup: kbEnded });
     }
+  });
+
+  bot.command('wipe', async (ctx) => {
+    if (ctx.chat.type !== 'private') return;
+    await wipeConversation(ctx, ctx.chat.id);
   });
 
   /**
@@ -513,6 +576,7 @@ export async function configureBotChrome(bot: Bot): Promise<void> {
     { command: 'next', description: 'رفتن سراغ نفر بعدی' },
     { command: 'stop', description: 'پایان چت' },
     { command: 'del', description: 'حذف پیام برای هر دو طرف (روی پیام reply بزنید)' },
+    { command: 'wipe', description: 'پاک کردن کل گفتگوی قبلی از هر دو طرف' },
     { command: 'video', description: 'تماس تصویری ناشناس' },
     { command: 'help', description: 'راهنما' },
   ]);

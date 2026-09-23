@@ -23,7 +23,8 @@ export class RelayMap {
   private readonly map = new Map<string, RelayEntry>();
   private readonly order: string[] = [];
 
-  constructor(private readonly max = 400) {}
+  // سقف بالا چون «پاک کردن کل گفتگو» به همه‌ی شناسه‌ها نیاز دارد، نه چند تای آخر.
+  constructor(private readonly max = 3000) {}
 
   private static key(chatId: number, messageId: number): string {
     return `${chatId}:${messageId}`;
@@ -62,10 +63,36 @@ export class RelayMap {
     return this.map.get(RelayMap.key(chatId, messageId))?.original === true;
   }
 
+  /**
+   * همه‌ی شناسه‌های پیام، گروه‌بندی‌شده بر اساس چت.
+   * برای پاک کردن کل گفتگو از هر دو سمت لازم است.
+   */
+  idsByChat(): Map<number, number[]> {
+    const out = new Map<number, number[]>();
+    for (const key of this.map.keys()) {
+      const sep = key.lastIndexOf(':');
+      const chat = Number(key.slice(0, sep));
+      const message = Number(key.slice(sep + 1));
+      if (!Number.isFinite(chat) || !Number.isFinite(message)) continue;
+      const list = out.get(chat);
+      if (list) list.push(message);
+      else out.set(chat, [message]);
+    }
+    return out;
+  }
+
   clear(): void {
     this.map.clear();
     this.order.length = 0;
   }
+}
+
+/** گفتگوی تمام‌شده‌ای که هنوز می‌شود پاکش کرد. */
+export interface EndedSession {
+  a: number;
+  b: number;
+  relay: RelayMap;
+  endedAt: number;
 }
 
 export interface ChatSession {
@@ -90,10 +117,49 @@ export type JoinResult =
 export class BotMatchmaker {
   private queue: number[] = [];
   private readonly sessions = new Map<number, ChatSession>();
+  /**
+   * گفتگوهای تازه‌تمام‌شده، تا کاربر بتواند بعدش «پاک کردن کل گفتگو» را بزند.
+   * برای هر کاربر فقط آخرین گفتگو نگه داشته می‌شود، پس مصرف حافظه به تعداد
+   * کاربران بستگی دارد نه تعداد چت‌ها.
+   */
+  private readonly recent = new Map<number, EndedSession>();
   private matchCounter = 0;
 
-  stats(): { waiting: number; chats: number; matches: number } {
-    return { waiting: this.queue.length, chats: this.sessions.size / 2, matches: this.matchCounter };
+  /** بعد از این مدت، تلگرام هم اجازه‌ی حذف نمی‌دهد؛ پس نگه داشتنش بی‌فایده است. */
+  private static readonly RECENT_TTL_MS = 48 * 60 * 60 * 1000;
+
+  stats(): { waiting: number; chats: number; matches: number; recent: number } {
+    return {
+      waiting: this.queue.length,
+      chats: this.sessions.size / 2,
+      matches: this.matchCounter,
+      recent: this.recent.size,
+    };
+  }
+
+  /** آخرین گفتگوی تمام‌شده‌ی این کاربر، اگر هنوز قابل پاک کردن باشد. */
+  recentOf(chatId: number): EndedSession | null {
+    this.purgeRecent();
+    return this.recent.get(chatId) ?? null;
+  }
+
+  /** بعد از پاک کردن، رکورد برای هر دو طرف دور انداخته می‌شود. */
+  forgetRecent(chatId: number): void {
+    const ended = this.recent.get(chatId);
+    if (!ended) return;
+    ended.relay.clear();
+    this.recent.delete(ended.a);
+    this.recent.delete(ended.b);
+  }
+
+  private purgeRecent(): void {
+    const cutoff = Date.now() - BotMatchmaker.RECENT_TTL_MS;
+    for (const [chatId, ended] of this.recent) {
+      if (ended.endedAt < cutoff) {
+        ended.relay.clear();
+        this.recent.delete(chatId);
+      }
+    }
   }
 
   isChatting(chatId: number): boolean {
@@ -158,10 +224,18 @@ export class BotMatchmaker {
     if (!session) return null;
 
     const partner = session.a === chatId ? session.b : session.a;
-    session.relay.clear();
     session.lastSent.clear();
     this.sessions.delete(session.a);
     this.sessions.delete(session.b);
+
+    // نگاشت پیام‌ها عمداً پاک نمی‌شود: بدون آن «پاک کردن کل گفتگو» غیرممکن
+    // می‌شد، چون دیگر نمی‌دانستیم کدام پیامِ این چت با کدام پیامِ آن چت
+    // متناظر است.
+    const ended: EndedSession = { a: session.a, b: session.b, relay: session.relay, endedAt: Date.now() };
+    this.recent.set(session.a, ended);
+    this.recent.set(session.b, ended);
+    this.purgeRecent();
+
     return partner;
   }
 }

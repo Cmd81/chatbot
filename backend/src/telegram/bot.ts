@@ -14,8 +14,10 @@ const BTN_CANCEL = '✖️ لغو جست‌وجو';
 const BTN_NEXT = '⏭ نفر بعدی';
 const BTN_STOP = '⛔️ پایان چت';
 const BTN_UNSEND = '🗑 حذف آخرین';
-const BTN_WIPE = '🧹 پاک کردن کل گفتگو';
-const BUTTONS = new Set([BTN_FIND, BTN_CANCEL, BTN_NEXT, BTN_STOP, BTN_UNSEND, BTN_WIPE]);
+const BTN_WIPE = '🧹 پاک کردن پیام‌های من';
+/** برچسب قدیمی، تا کیبوردهای کهنه‌ی کاربران هم کار کنند. */
+const BTN_WIPE_LEGACY = '🧹 پاک کردن کل گفتگو';
+const BUTTONS = new Set([BTN_FIND, BTN_CANCEL, BTN_NEXT, BTN_STOP, BTN_UNSEND, BTN_WIPE, BTN_WIPE_LEGACY]);
 
 const kbIdle = new Keyboard().text(BTN_FIND).resized().persistent();
 /** دکمه‌های اینلاینی که زیر پیام «چت تمام شد» می‌نشینند. */
@@ -24,12 +26,14 @@ const kbIdle = new Keyboard().text(BTN_FIND).resized().persistent();
  * نشان داده می‌شود — زیباتر و بافت‌دارتر از کیبورد پایین.
  */
 function endedKeyboard(conversationId: string): InlineKeyboard {
-  return new InlineKeyboard().text('🧹 پاک کردن کل گفتگو', `wipe:${conversationId}`);
+  return new InlineKeyboard().text(BTN_WIPE, `wipe:${conversationId}`);
 }
 
 const ENDED_BODY = [
-  'اگر نمی‌خواهی هیچ اثری بماند، دکمه‌ی زیر را بزن —',
-  'تمام پیام‌های این گفتگو از <b>هر دو طرف</b> پاک می‌شود.',
+  'اگر نمی‌خواهی اثری از حرف‌هایت بماند، دکمه‌ی زیر را بزن —',
+  '<b>پیام‌های خودت</b> از هر دو طرف پاک می‌شود.',
+  '',
+  '<i>پیام‌های طرف مقابل دست نمی‌خورد؛ او هم همین دکمه را دارد.</i>',
 ].join('\n');
 
 const kbWaiting = new Keyboard().text(BTN_CANCEL).resized().persistent();
@@ -55,7 +59,7 @@ const HELP_TEXT = [
   '/chat — پیدا کردن هم‌صحبت',
   '/next — رفتن سراغ نفر بعدی',
   '/stop — پایان چت',
-  '/wipe — پاک کردن کل گفتگوی قبلی از هر دو طرف',
+  '/wipe — پاک کردن پیام‌های خودت از گفتگوی قبلی، در هر دو طرف',
   '/del — حذف پیام (روی پیام خودت reply بزن)',
   '     یا دکمه‌ی «🗑 حذف آخرین» برای پاک کردن آخرین پیامت',
   '',
@@ -279,6 +283,13 @@ async function unsend(ctx: Context, chatId: number, messageId: number, commandId
  * برای این کار نگاشت شناسه‌ی پیام‌ها بعد از پایان چت نگه داشته می‌شود؛ وگرنه
  * دیگر نمی‌دانستیم کدام پیام در چت طرف مقابل متناظر کدام پیام است.
  */
+/**
+ * پاک کردن **پیام‌های خودِ کاربر** از هر دو چت.
+ *
+ * عمداً فقط پیام‌های خود کاربر: اگر هر کس می‌توانست کل گفتگو را پاک کند،
+ * کسی که حرف بدی زده بود می‌توانست بلافاصله مدرکش را از چت طرف مقابل هم
+ * محو کند. طرف مقابل همین دکمه را برای پیام‌های خودش دارد.
+ */
 async function wipeConversation(
   ctx: Context,
   chatId: number,
@@ -292,11 +303,19 @@ async function wipeConversation(
     return { removed: 0, failed: 0 };
   }
 
-  const byChat = ended.relay.idsByChat();
+  const partner = ended.a === chatId ? ended.b : ended.a;
+  const pairs = ended.relay.ownMessages(chatId);
+  if (pairs.length === 0) {
+    if (!options.silent) {
+      await ctx.reply('پیامی از شما برای پاک کردن نمانده است.', { reply_markup: kbIdle });
+    }
+    return { removed: 0, failed: 0 };
+  }
+
   let removed = 0;
   let failed = 0;
 
-  for (const [chat, ids] of byChat) {
+  const dropMany = async (chat: number, ids: number[]): Promise<void> => {
     // تلگرام حداکثر ۱۰۰ شناسه در هر فراخوانی می‌پذیرد
     for (let i = 0; i < ids.length; i += 100) {
       const batch = ids.slice(i, i + 100);
@@ -316,16 +335,20 @@ async function wipeConversation(
         }
       }
     }
-  }
+  };
 
-  botChat.forgetRecent(chatId);
+  await dropMany(partner, pairs.map((pair) => pair.theirs));
+  await dropMany(chatId, pairs.map((pair) => pair.mine));
 
-  log.info('conversation wiped', { removed, failed });
+  ended.relay.forgetOwn(chatId, partner);
+  // وقتی هر دو طرف پیام‌هایشان را پاک کردند، دیگر چیزی برای نگه داشتن نیست.
+  if (ended.relay.size === 0) botChat.forgetRecent(chatId);
+
+  log.info('own messages wiped', { removed, failed });
 
   if (!options.silent) {
-    const lines = [`🧹 ${removed} پیام از هر دو طرف پاک شد.`];
+    const lines = [`🧹 ${removed} پیام شما از هر دو طرف پاک شد.`];
     if (failed > 0) lines.push(`${failed} پیام پاک نشد (احتمالاً قدیمی‌تر از ۴۸ ساعت بوده).`);
-    lines.push('دیگر هیچ اثری از این گفتگو نمانده است.');
     await ctx.reply(lines.join('\n'), { reply_markup: kbIdle });
   }
   return { removed, failed };
@@ -486,8 +509,8 @@ export function createBot(): Bot | null {
     await ctx
       .editMessageText(
         result.failed > 0
-          ? `🧹 <b>${result.removed} پیام</b> از هر دو طرف پاک شد.\n${result.failed} پیام پاک نشد (قدیمی‌تر از ۴۸ ساعت).`
-          : `🧹 <b>${result.removed} پیام</b> از هر دو طرف پاک شد.\nدیگر هیچ اثری از این گفتگو نمانده است.`,
+          ? `🧹 <b>${result.removed} پیام شما</b> از هر دو طرف پاک شد.\n${result.failed} پیام پاک نشد (قدیمی‌تر از ۴۸ ساعت).`
+          : `🧹 <b>${result.removed} پیام شما</b> از هر دو طرف پاک شد.`,
         { parse_mode: 'HTML' },
       )
       .catch(() => undefined);
@@ -560,7 +583,7 @@ export function createBot(): Bot | null {
         await startSearch(ctx, chatId);
       } else if (text === BTN_STOP) {
         await endChat(ctx, chatId, { announce: true });
-      } else if (text === BTN_WIPE) {
+      } else if (text === BTN_WIPE || text === BTN_WIPE_LEGACY) {
         await wipeConversation(ctx, chatId);
       } else if (text === BTN_UNSEND) {
         const current = botChat.sessionOf(chatId);
@@ -674,7 +697,7 @@ export async function configureBotChrome(bot: Bot): Promise<void> {
     { command: 'next', description: 'رفتن سراغ نفر بعدی' },
     { command: 'stop', description: 'پایان چت' },
     { command: 'del', description: 'حذف پیام برای هر دو طرف (روی پیام reply بزنید)' },
-    { command: 'wipe', description: 'پاک کردن کل گفتگوی قبلی از هر دو طرف' },
+    { command: 'wipe', description: 'پاک کردن پیام‌های خودت از گفتگوی قبلی' },
     { command: 'video', description: 'تماس تصویری ناشناس' },
     { command: 'help', description: 'راهنما' },
   ]);

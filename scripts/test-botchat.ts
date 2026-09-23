@@ -160,7 +160,7 @@ console.log('\n۷) جدا بودن کاربران:');
   check('پایان یک چت به چت دیگر کاری ندارد', mm.partnerOf(3) === 4 && mm.stats().chats === 1);
 }
 
-console.log('\n۸) پاک کردن کل گفتگو بعد از پایان چت:');
+console.log('\n۸) پاک کردن پیام‌های خودِ کاربر بعد از پایان چت:');
 {
   const mm = new BotMatchmaker();
   mm.join(500);
@@ -177,14 +177,31 @@ console.log('\n۸) پاک کردن کل گفتگو بعد از پایان چت:'
   check('طرف مقابل هم به همان گفتگو دسترسی دارد', mm.recentOf(600) !== null);
   check('هر دو به یک رکورد اشاره می‌کنند', mm.recentOf(500) === mm.recentOf(600));
 
-  const byChat = mm.recentOf(500)!.relay.idsByChat();
-  const mine = [...(byChat.get(500) ?? [])].sort((a, b) => a - b);
-  const theirs = [...(byChat.get(600) ?? [])].sort((a, b) => a - b);
-  check('همه‌ی پیام‌های چت اول فهرست می‌شوند', JSON.stringify(mine) === JSON.stringify([1, 2, 900]), JSON.stringify(mine));
-  check('همه‌ی پیام‌های چت دوم فهرست می‌شوند', JSON.stringify(theirs) === JSON.stringify([50, 101, 102]), JSON.stringify(theirs));
+  const relay = mm.recentOf(500)!.relay;
+
+  // فقط پیام‌های خودِ ۵۰۰ — نه پیام‌های ۶۰۰
+  const own500 = relay.ownMessages(500).sort((a, b) => a.mine - b.mine);
+  check(
+    'فقط پیام‌های خودِ کاربر فهرست می‌شوند',
+    JSON.stringify(own500) === JSON.stringify([{ mine: 1, theirs: 101 }, { mine: 2, theirs: 102 }]),
+    JSON.stringify(own500),
+  );
+  const own600 = relay.ownMessages(600);
+  check('طرف مقابل هم فقط پیام‌های خودش را دارد', JSON.stringify(own600) === JSON.stringify([{ mine: 50, theirs: 900 }]));
+
+  // ۵۰۰ پیام‌هایش را پاک می‌کند
+  relay.forgetOwn(500, 600);
+  check('بعد از پاک کردن، پیام‌های او از نگاشت می‌رود', relay.ownMessages(500).length === 0);
+  check('ولی پیام‌های طرف مقابل دست‌نخورده می‌ماند', relay.ownMessages(600).length === 1);
+  check('کپی‌های او هم از سمت طرف مقابل پاک می‌شود', relay.lookup(600, 101) === undefined && relay.lookup(600, 102) === undefined);
+  check('نگاشت پیام طرف مقابل هنوز کار می‌کند', relay.lookup(600, 50) === 900 && relay.lookup(500, 900) === 50);
+
+  // حالا ۶۰۰ هم پاک می‌کند → نگاشت کاملاً خالی
+  relay.forgetOwn(600, 500);
+  check('وقتی هر دو پاک کردند، نگاشت خالی می‌شود', relay.size === 0);
 
   mm.forgetRecent(600);
-  check('بعد از پاک کردن، رکورد برای هر دو طرف می‌رود', mm.recentOf(500) === null && mm.recentOf(600) === null);
+  check('forgetRecent رکورد را برای هر دو طرف دور می‌اندازد', mm.recentOf(500) === null && mm.recentOf(600) === null);
 }
 
 console.log('\n۹) چت تازه، رکورد قبلی را جایگزین می‌کند:');

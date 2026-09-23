@@ -66,21 +66,38 @@ export class RelayMap {
   }
 
   /**
-   * همه‌ی شناسه‌های پیام، گروه‌بندی‌شده بر اساس چت.
-   * برای پاک کردن کل گفتگو از هر دو سمت لازم است.
+   * پیام‌هایی که **خودِ صاحب این چت** فرستاده، به‌همراه شناسه‌ی کپی‌شان در چت
+   * طرف مقابل. پایه‌ی «پاک کردن پیام‌های من».
    */
-  idsByChat(): Map<number, number[]> {
-    const out = new Map<number, number[]>();
-    for (const key of this.map.keys()) {
+  ownMessages(chatId: number): Array<{ mine: number; theirs: number }> {
+    const out: Array<{ mine: number; theirs: number }> = [];
+    for (const [key, entry] of this.map) {
+      if (!entry.original) continue;
       const sep = key.lastIndexOf(':');
-      const chat = Number(key.slice(0, sep));
-      const message = Number(key.slice(sep + 1));
-      if (!Number.isFinite(chat) || !Number.isFinite(message)) continue;
-      const list = out.get(chat);
-      if (list) list.push(message);
-      else out.set(chat, [message]);
+      if (Number(key.slice(0, sep)) !== chatId) continue;
+      const mine = Number(key.slice(sep + 1));
+      if (Number.isFinite(mine)) out.push({ mine, theirs: entry.peer });
     }
     return out;
+  }
+
+  /**
+   * فراموش کردن پیام‌های یک طرف، بعد از اینکه پاک شدند.
+   * نگاشت‌های طرف مقابل دست‌نخورده می‌مانند تا او هم بتواند پیام‌های خودش را
+   * پاک کند.
+   */
+  forgetOwn(chatId: number, partnerId: number): void {
+    const doomed = new Set<string>();
+    for (const pair of this.ownMessages(chatId)) {
+      doomed.add(RelayMap.key(chatId, pair.mine));
+      doomed.add(RelayMap.key(partnerId, pair.theirs));
+    }
+    if (doomed.size === 0) return;
+    for (const key of doomed) this.map.delete(key);
+    // ترتیب هم باید هرس شود وگرنه سقف حافظه اشتباه حساب می‌شود
+    const kept = this.order.filter((k) => !doomed.has(k));
+    this.order.length = 0;
+    this.order.push(...kept);
   }
 
   clear(): void {

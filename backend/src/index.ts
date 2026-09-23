@@ -9,7 +9,7 @@ import { log } from './logger.js';
 import { Matchmaker } from './matchmaker.js';
 import { attachWebSocketServer } from './wsServer.js';
 import { livekitHealthy } from './livekit.js';
-import { createBot, startBot } from './telegram/bot.js';
+import { botChat, createBot, startBot } from './telegram/bot.js';
 
 assertRuntimeConfig();
 
@@ -39,6 +39,7 @@ app.get('/healthz', async (_req, reply) => {
     livekit: healthCache.livekit,
     connections: wsHandle.clientCount(),
     ...stats,
+    botChat: botChat.stats(),
     uptime: Math.round(process.uptime()),
   });
 });

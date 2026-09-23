@@ -1,5 +1,6 @@
 import { Bot, GrammyError, HttpError, InlineKeyboard, Keyboard } from 'grammy';
 import type { Context } from 'grammy';
+import type { InputMedia, Message } from 'grammy/types';
 import { config } from '../config.js';
 import { log } from '../logger.js';
 import { BotMatchmaker } from './chatMatch.js';
@@ -12,11 +13,12 @@ const BTN_FIND = '🔎 پیدا کردن هم‌صحبت';
 const BTN_CANCEL = '✖️ لغو جست‌وجو';
 const BTN_NEXT = '⏭ نفر بعدی';
 const BTN_STOP = '⛔️ پایان چت';
-const BUTTONS = new Set([BTN_FIND, BTN_CANCEL, BTN_NEXT, BTN_STOP]);
+const BTN_UNSEND = '🗑 حذف آخرین';
+const BUTTONS = new Set([BTN_FIND, BTN_CANCEL, BTN_NEXT, BTN_STOP, BTN_UNSEND]);
 
 const kbIdle = new Keyboard().text(BTN_FIND).resized().persistent();
 const kbWaiting = new Keyboard().text(BTN_CANCEL).resized().persistent();
-const kbChatting = new Keyboard().text(BTN_NEXT).text(BTN_STOP).resized().persistent();
+const kbChatting = new Keyboard().text(BTN_NEXT).text(BTN_STOP).row().text(BTN_UNSEND).resized().persistent();
 
 const START_TEXT = [
   '👋 سلام!',
@@ -39,17 +41,48 @@ const HELP_TEXT = [
   '/next — رفتن سراغ نفر بعدی',
   '/stop — پایان چت',
   '/del — حذف پیام (روی پیام خودت reply بزن)',
+  '     یا دکمه‌ی «🗑 حذف آخرین» برای پاک کردن آخرین پیامت',
   '',
   '• نام، شماره و آی‌دی تلگرام تو به طرف مقابل نشان داده نمی‌شود.',
   '• پیام‌ها روی سرور ما ذخیره نمی‌شوند.',
   '• می‌توانی روی پیام طرف مقابل reply بزنی؛ درست منتقل می‌شود.',
   '• ویرایش پیام خودکار به طرف مقابل هم اعمال می‌شود.',
-  '• حذف با دکمه‌ی خود تلگرام به طرف مقابل نمی‌رسد — تلگرام این را به ربات',
-  '  خبر نمی‌دهد. به‌جایش روی پیامت reply بزن و /del بفرست.',
+  '• ویرایش رسانه (عوض کردن خودِ عکس یا ویدیو) هم منتقل می‌شود.',
+  '• حذف با دکمه‌ی خود تلگرام به طرف مقابل نمی‌رسد — تلگرام این را به هیچ',
+  '  رباتی خبر نمی‌دهد. به‌جایش «🗑 حذف آخرین» را بزن یا روی پیامت reply',
+  '  بزن و /del بفرست.',
 ].join('\n');
 
 function videoKeyboard(): InlineKeyboard {
   return new InlineKeyboard().webApp('📹 شروع تماس تصویری ناشناس', config.publicUrl);
+}
+
+/**
+ * ساخت InputMedia از یک پیام، برای وقتی که کاربر خودِ رسانه را عوض می‌کند.
+ *
+ * `editMessageMedia` فقط این پنج نوع را می‌پذیرد. ویس، ویدیو-نوت و استیکر
+ * قابل ویرایش نیستند و null برمی‌گردانند تا به ویرایش کپشن برگردیم.
+ *
+ * `file_id` مخصوص همین ربات است و در همه‌ی چت‌هایش کار می‌کند، پس نیازی به
+ * دانلود و آپلود دوباره‌ی فایل نیست.
+ */
+function toInputMedia(msg: Message): InputMedia | null {
+  const caption = typeof msg.caption === 'string' ? msg.caption : undefined;
+  const captionEntities = msg.caption_entities;
+  const extra = {
+    ...(caption === undefined ? {} : { caption }),
+    ...(captionEntities ? { caption_entities: captionEntities } : {}),
+  };
+
+  if (msg.photo && msg.photo.length > 0) {
+    const largest = msg.photo[msg.photo.length - 1];
+    if (largest) return { type: 'photo', media: largest.file_id, ...extra };
+  }
+  if (msg.video) return { type: 'video', media: msg.video.file_id, ...extra };
+  if (msg.animation) return { type: 'animation', media: msg.animation.file_id, ...extra };
+  if (msg.audio) return { type: 'audio', media: msg.audio.file_id, ...extra };
+  if (msg.document) return { type: 'document', media: msg.document.file_id, ...extra };
+  return null;
 }
 
 // ── بافر آلبوم ──────────────────────────────────────────────────────────────
@@ -90,6 +123,8 @@ async function flushAlbum(ctx: Context, key: string): Promise<void> {
       const source = ids[i];
       if (source !== undefined) session.relay.remember(pending.chatId, source, partner, item.message_id);
     });
+    const last = ids[ids.length - 1];
+    if (last !== undefined) session.lastSent.set(pending.chatId, last);
   } catch (err) {
     log.warn('album relay failed', { err: String(err) });
   }
@@ -176,6 +211,52 @@ async function trySearchOnce(ctx: Context, chatId: number): Promise<boolean> {
   }
 }
 
+/**
+ * حذف یک پیام از هر دو سمت.
+ *
+ * تلگرام هیچ آپدیتی برای «کاربر پیامی را پاک کرد» به ربات نمی‌دهد، پس این
+ * تنها راه ممکن است: کاربر صراحتاً درخواست حذف بدهد.
+ *
+ * @param commandId پیام خودِ دستور، که بعد از انجام کار پاک می‌شود.
+ */
+async function unsend(ctx: Context, chatId: number, messageId: number, commandId?: number): Promise<void> {
+  const session = botChat.sessionOf(chatId);
+  if (!session) {
+    await ctx.reply('در حال حاضر در چتی نیستید.');
+    return;
+  }
+
+  // فقط پیام‌های خودِ کاربر؛ وگرنه می‌شد پیام طرف مقابل را از چت خودِ او پاک کرد.
+  if (!session.relay.isOriginal(chatId, messageId)) {
+    await ctx.reply('فقط پیام‌های خودت را می‌توانی حذف کنی.');
+    return;
+  }
+
+  const partner = session.a === chatId ? session.b : session.a;
+  const target = session.relay.lookup(chatId, messageId);
+
+  const drop = async (chat: number, id: number): Promise<boolean> => {
+    try {
+      await ctx.api.deleteMessage(chat, id);
+      return true;
+    } catch (err) {
+      log.debug('delete failed', { err: String(err) });
+      return false;
+    }
+  };
+
+  const removedThere = target === undefined ? false : await drop(partner, target);
+  await drop(chatId, messageId);
+  if (commandId !== undefined) await drop(chatId, commandId);
+
+  if (session.lastSent.get(chatId) === messageId) session.lastSent.delete(chatId);
+
+  if (!removedThere) {
+    // تلگرام اجازه‌ی حذف پیام قدیمی‌تر از ۴۸ ساعت را نمی‌دهد
+    await ctx.reply('پیام از سمت تو پاک شد، ولی از سمت طرف مقابل نه (احتمالاً قدیمی‌تر از ۴۸ ساعت بوده).');
+  }
+}
+
 async function stopChat(ctx: Context, chatId: number, quiet = false): Promise<boolean> {
   const partner = botChat.end(chatId);
   if (partner === null) {
@@ -251,42 +332,12 @@ export function createBot(): Bot | null {
    */
   bot.command('del', async (ctx) => {
     if (ctx.chat.type !== 'private') return;
-    const chatId = ctx.chat.id;
-    const message = ctx.message;
-    const session = botChat.sessionOf(chatId);
-    const replied = message?.reply_to_message?.message_id;
-
-    if (!message || !session || replied === undefined) {
-      await ctx.reply('برای حذف، روی پیام خودت reply بزن و /del بفرست.');
+    const replied = ctx.message?.reply_to_message?.message_id;
+    if (replied === undefined) {
+      await ctx.reply('برای حذف، روی پیام خودت reply بزن و /del بفرست — یا دکمه‌ی «🗑 حذف آخرین» را بزن.');
       return;
     }
-
-    // فقط پیام‌های خودِ کاربر؛ وگرنه می‌شد پیام طرف مقابل را از چت او پاک کرد.
-    if (!session.relay.isOriginal(chatId, replied)) {
-      await ctx.reply('فقط پیام‌های خودت را می‌توانی حذف کنی.');
-      return;
-    }
-
-    const partner = session.a === chatId ? session.b : session.a;
-    const target = session.relay.lookup(chatId, replied);
-    const drop = async (chat: number, message: number): Promise<boolean> => {
-      try {
-        await ctx.api.deleteMessage(chat, message);
-        return true;
-      } catch (err) {
-        log.debug('delete failed', { err: String(err) });
-        return false;
-      }
-    };
-
-    const removedThere = target === undefined ? false : await drop(partner, target);
-    await drop(chatId, replied);
-    await drop(chatId, message.message_id);
-
-    if (!removedThere) {
-      // تلگرام اجازه‌ی حذف پیام قدیمی‌تر از ۴۸ ساعت را نمی‌دهد
-      await ctx.reply('پیام از سمت تو پاک شد، ولی از سمت طرف مقابل نه (احتمالاً قدیمی‌تر از ۴۸ ساعت بوده).');
-    }
+    await unsend(ctx, ctx.chat.id, replied, ctx.message?.message_id);
   });
 
   // ── ویرایش پیام ───────────────────────────────────────────────────────────
@@ -302,11 +353,21 @@ export function createBot(): Bot | null {
     const partner = session.a === chatId ? session.b : session.a;
 
     try {
+      const media = toInputMedia(edited);
       if (typeof edited.text === 'string') {
         await ctx.api.editMessageText(partner, target, edited.text, {
           ...(edited.entities ? { entities: edited.entities } : {}),
         });
+      } else if (media) {
+        /**
+         * همیشه editMessageMedia (نه editMessageCaption) چون از روی آپدیت
+         * نمی‌شود فهمید کاربر فقط کپشن را عوض کرده یا خودِ فایل را. این متد
+         * هر دو حالت را درست پوشش می‌دهد و چون از همان file_id استفاده
+         * می‌شود، فایلی دوباره آپلود نمی‌گردد.
+         */
+        await ctx.api.editMessageMedia(partner, target, media);
       } else if (typeof edited.caption === 'string') {
+        // ویس، ویدیو-نوت و استیکر: فقط کپشن قابل ویرایش است
         await ctx.api.editMessageCaption(partner, target, {
           caption: edited.caption,
           ...(edited.caption_entities ? { caption_entities: edited.caption_entities } : {}),
@@ -336,6 +397,14 @@ export function createBot(): Bot | null {
       } else if (text === BTN_NEXT) {
         await stopChat(ctx, chatId, true);
         await startSearch(ctx, chatId);
+      } else if (text === BTN_UNSEND) {
+        const current = botChat.sessionOf(chatId);
+        const last = current?.lastSent.get(chatId);
+        if (last === undefined) {
+          await ctx.reply('پیامی برای حذف پیدا نشد.', { reply_markup: keyboardFor(chatId) });
+        } else {
+          await unsend(ctx, chatId, last, ctx.message.message_id);
+        }
       } else if (text === BTN_STOP) {
         if (await stopChat(ctx, chatId)) {
           await ctx.reply('چت تمام شد.', { reply_markup: kbIdle });
@@ -405,6 +474,7 @@ export function createBot(): Bot | null {
         copied = await copyOnce();
       }
       session.relay.remember(chatId, ctx.message.message_id, partner, copied.message_id);
+      session.lastSent.set(chatId, ctx.message.message_id);
     } catch (err) {
       const description = err instanceof GrammyError ? err.description : String(err);
       log.warn('relay failed', { err: description });

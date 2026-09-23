@@ -73,6 +73,8 @@ export interface ChatSession {
   b: number;
   relay: RelayMap;
   startedAt: number;
+  /** آخرین پیامی که هر طرف فرستاده — برای دکمه‌ی «حذف آخرین». */
+  lastSent: Map<number, number>;
 }
 
 export type JoinResult =
@@ -125,7 +127,13 @@ export class BotMatchmaker {
       return { status: 'queued', position: this.queue.length };
     }
 
-    const session: ChatSession = { a: partner, b: chatId, relay: new RelayMap(), startedAt: Date.now() };
+    const session: ChatSession = {
+      a: partner,
+      b: chatId,
+      relay: new RelayMap(),
+      startedAt: Date.now(),
+      lastSent: new Map(),
+    };
     this.sessions.set(partner, session);
     this.sessions.set(chatId, session);
     this.matchCounter += 1;
@@ -151,6 +159,7 @@ export class BotMatchmaker {
 
     const partner = session.a === chatId ? session.b : session.a;
     session.relay.clear();
+    session.lastSent.clear();
     this.sessions.delete(session.a);
     this.sessions.delete(session.b);
     return partner;

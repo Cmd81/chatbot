@@ -196,6 +196,53 @@ TELEGRAM_WEBHOOK_SECRET=<رشته‌ی تصادفی — deploy.sh تولید ک�
 
 ---
 
+## به‌روزرسانی خودکار
+
+اگر نمی‌خواهید هر بار دستی `git pull && docker compose build && up -d` بزنید:
+
+```bash
+cd /opt/anon-video
+./scripts/install-autoupdate.sh          # هر ۵ دقیقه
+./scripts/install-autoupdate.sh 15min    # فاصله‌ی دلخواه
+./scripts/install-autoupdate.sh off      # خاموش کردن
+```
+
+یک systemd timer نصب می‌شود که هر بار:
+
+1. `git fetch` می‌زند و اگر کامیت تازه‌ای نباشد **فوراً و بدون build** بیرون می‌آید
+2. اگر بود، pull می‌کند، دامنه‌ی TURN را دوباره با `.env` هماهنگ می‌کند،
+   ایمیج‌ها را می‌سازد و سرویس‌ها را بالا می‌آورد
+3. سلامت را چک می‌کند
+
+| | |
+|---|---|
+| وضعیت | `systemctl status anon-video-update.timer` |
+| زمان بعدی | `systemctl list-timers anon-video-update.timer` |
+| لاگ | `journalctl -u anon-video-update.service -f` |
+| اجرای فوری | `systemctl start anon-video-update.service` |
+
+### رفتار در حالت‌های خطا
+
+- **build شکست بخورد** → سرویس‌های قبلی دست‌نخورده در حال اجرا می‌مانند
+- **فایل‌های تحت گیت را دستی عوض کرده باشید** → به‌روزرسانی متوقف و در لاگ
+  اعلام می‌شود، تا تغییراتتان بی‌سروصدا پاک نشود. تنها استثنا `livekit.yaml`
+  است که `deploy.sh` خودش برای هماهنگی دامنه عوضش می‌کند و بعد از pull دوباره
+  از `.env` ساخته می‌شود.
+- **فایل‌های untracked** (لاگ، پشتیبان، هر چیزی که در پوشه گذاشته‌اید)
+  مزاحم به‌روزرسانی نمی‌شوند
+- **دو اجرای هم‌زمان** با `flock` جلوگیری می‌شود
+
+> ⚠️ با این کار هر کامیتی که روی برنچ برود، حداکثر ظرف چند دقیقه روی سرور
+> زنده می‌شود — بدون بازبینی. برای محیط واقعی یا فاصله را بیشتر بگذارید، یا
+> فقط از برنچ پایدار استفاده کنید، یا خاموشش کنید و دستی به‌روز کنید.
+
+### جایگزین: GitHub Actions
+
+اگر می‌خواهید به‌جای هر چند دقیقه یک‌بار بررسی، **لحظه‌ی پوش** استقرار انجام
+شود، workflow آماده است: [`docs/DEPLOY-GITHUB-ACTIONS.md`](docs/DEPLOY-GITHUB-ACTIONS.md)
+
+---
+
 ## دستورات مدیریت
 
 همه از داخل پوشه‌ی پروژه روی سرور:
@@ -384,6 +431,8 @@ node scripts/check-turn.mjs turn.example.com 3478 5349
     ├── test-botchat.ts      تست چت داخل ربات
     ├── test-initdata.mjs    تست احراز هویت تلگرام
     ├── check-turn.mjs       تست STUN/TURN روی UDP و TLS
+    ├── autoupdate.sh        به‌روزرسانی خودکار در صورت وجود کامیت تازه
+    ├── install-autoupdate.sh نصب systemd timer برای autoupdate
     └── verify.sh            بررسی کامل استقرار
 ```
 

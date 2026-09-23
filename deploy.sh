@@ -155,5 +155,6 @@ c_ok "آماده است 🎉"
 echo "   وب‌سایت : https://${PUBLIC_HOST}"
 echo "   TURN    : turn:${TURN_HOST}:3478  و  turns:${TURN_HOST}:5349"
 echo
-echo "   بررسی کامل : ./scripts/verify.sh"
-echo "   لاگ زنده   : docker compose logs -f"
+echo "   بررسی کامل      : ./scripts/verify.sh"
+echo "   به‌روزرسانی خودکار: ./scripts/install-autoupdate.sh"
+echo "   لاگ زنده        : docker compose logs -f"

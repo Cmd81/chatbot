@@ -24,10 +24,7 @@ const kbIdle = new Keyboard().text(BTN_FIND).resized().persistent();
  * نشان داده می‌شود — زیباتر و بافت‌دارتر از کیبورد پایین.
  */
 function endedKeyboard(conversationId: string): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('🧹 پاک کردن کل گفتگو', `wipe:${conversationId}`)
-    .row()
-    .text('🔎 نفر بعدی', 'find');
+  return new InlineKeyboard().text('🧹 پاک کردن کل گفتگو', `wipe:${conversationId}`);
 }
 
 const ENDED_BODY = [
@@ -35,9 +32,6 @@ const ENDED_BODY = [
   'تمام پیام‌های این گفتگو از <b>هر دو طرف</b> پاک می‌شود.',
 ].join('\n');
 
-function endedText(headline: string): string {
-  return `${headline}\n\n${ENDED_BODY}`;
-}
 const kbWaiting = new Keyboard().text(BTN_CANCEL).resized().persistent();
 const kbChatting = new Keyboard().text(BTN_NEXT).text(BTN_STOP).row().text(BTN_UNSEND).resized().persistent();
 
@@ -338,21 +332,52 @@ async function wipeConversation(
 }
 
 /**
- * پیام پایان چت به‌همراه دکمه‌های اینلاین.
+ * اطلاع پایان چت.
  *
- * کیبورد پایین عمداً دست‌نخورده می‌ماند: یک پیام تلگرام یا کیبورد اینلاین
- * دارد یا کیبورد پایین، نه هر دو. دکمه‌های قدیمی هم اگر زده شوند بی‌خطرند و
- * با اولین تعامل بعدی (مثلاً «نفر بعدی») کیبورد خودش به‌روز می‌شود.
+ * عمداً دو پیام فرستاده می‌شود: یک پیام تلگرام یا کیبورد اینلاین دارد یا
+ * کیبورد پایین، نه هر دو. پیام اول منوی پایین را از حالت «در چت» خارج
+ * می‌کند و پیام دوم دکمه‌ی پاک کردن را درست زیر همان گفتگو می‌گذارد.
+ *
+ * @param headline اگر ندهید، فقط کارت پاک کردن فرستاده می‌شود (برای وقتی
+ * که بلافاصله بعدش جست‌وجوی تازه شروع می‌شود و خودش منو را به‌روز می‌کند).
  */
-async function tellEnded(ctx: Context, chatId: number, conversationId: string, headline: string): Promise<void> {
+async function sendEndedNotice(
+  ctx: Context,
+  chatId: number,
+  conversationId: string,
+  headline?: string,
+): Promise<void> {
   try {
-    await ctx.api.sendMessage(chatId, endedText(headline), {
+    if (headline !== undefined) {
+      await ctx.api.sendMessage(chatId, headline, { parse_mode: 'HTML', reply_markup: kbIdle });
+    }
+    await ctx.api.sendMessage(chatId, ENDED_BODY, {
       parse_mode: 'HTML',
       reply_markup: endedKeyboard(conversationId),
     });
   } catch (err) {
     log.warn('telegram send failed', { chatId, err: String(err) });
   }
+}
+
+/**
+ * پایان چت برای هر دو طرف.
+ *
+ * نکته‌ی مهم: کارت «پاک کردن گفتگو» باید به **هر دو نفر** برسد، نه فقط به
+ * کسی که ترک شده. نسخه‌ی قبلی این را فقط برای طرف مقابل می‌فرستاد.
+ */
+async function endChat(ctx: Context, chatId: number, options: { announce: boolean }): Promise<boolean> {
+  const session = botChat.sessionOf(chatId);
+  if (!session) {
+    if (options.announce) {
+      await ctx.reply('در حال حاضر در چتی نیستید.', { reply_markup: keyboardFor(chatId) });
+    }
+    return false;
+  }
+  const conversationId = session.id;
+  await stopChat(ctx, chatId, true);
+  await sendEndedNotice(ctx, chatId, conversationId, options.announce ? '👋 <b>چت تمام شد.</b>' : undefined);
+  return true;
 }
 
 async function stopChat(ctx: Context, chatId: number, quiet = false): Promise<boolean> {
@@ -364,7 +389,7 @@ async function stopChat(ctx: Context, chatId: number, quiet = false): Promise<bo
     }
     return false;
   }
-  await tellEnded(ctx, partner, session.id, '👋 <b>طرف مقابل چت را ترک کرد.</b>');
+  await sendEndedNotice(ctx, partner, session.id, '👋 <b>طرف مقابل چت را ترک کرد.</b>');
   log.info('bot chat ended', botChat.stats());
   return true;
 }
@@ -406,7 +431,7 @@ export function createBot(): Bot | null {
 
   bot.command('next', async (ctx) => {
     if (ctx.chat.type !== 'private') return;
-    await stopChat(ctx, ctx.chat.id, true);
+    await endChat(ctx, ctx.chat.id, { announce: false });
     await startSearch(ctx, ctx.chat.id);
   });
 
@@ -417,15 +442,7 @@ export function createBot(): Bot | null {
       await ctx.reply('جست‌وجو لغو شد.', { reply_markup: kbIdle });
       return;
     }
-    const ending = botChat.sessionOf(chatId);
-    if (ending && (await stopChat(ctx, chatId, true))) {
-      await ctx.reply(endedText('👋 <b>چت تمام شد.</b>'), {
-        parse_mode: 'HTML',
-        reply_markup: endedKeyboard(ending.id),
-      });
-    } else {
-      await ctx.reply('در حال حاضر در چتی نیستید.', { reply_markup: keyboardFor(chatId) });
-    }
+    await endChat(ctx, chatId, { announce: true });
   });
 
   bot.command('wipe', async (ctx) => {
@@ -539,8 +556,12 @@ export function createBot(): Bot | null {
         const wasWaiting = botChat.cancel(chatId);
         await ctx.reply(wasWaiting ? 'جست‌وجو لغو شد.' : 'در صف نبودید.', { reply_markup: kbIdle });
       } else if (text === BTN_NEXT) {
-        await stopChat(ctx, chatId, true);
+        await endChat(ctx, chatId, { announce: false });
         await startSearch(ctx, chatId);
+      } else if (text === BTN_STOP) {
+        await endChat(ctx, chatId, { announce: true });
+      } else if (text === BTN_WIPE) {
+        await wipeConversation(ctx, chatId);
       } else if (text === BTN_UNSEND) {
         const current = botChat.sessionOf(chatId);
         const last = current?.lastSent.get(chatId);
@@ -548,10 +569,6 @@ export function createBot(): Bot | null {
           await ctx.reply('پیامی برای حذف پیدا نشد.', { reply_markup: keyboardFor(chatId) });
         } else {
           await unsend(ctx, chatId, last, ctx.message.message_id);
-        }
-      } else if (text === BTN_STOP) {
-        if (await stopChat(ctx, chatId)) {
-          await ctx.reply('چت تمام شد.', { reply_markup: kbIdle });
         }
       }
       return;

@@ -104,36 +104,6 @@ jobs:
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: آماده‌سازی سرور
-        if: steps.guard.outputs.ready == 'true'
-        run: |
-          ssh target 'bash -seo pipefail' <<'EOF'
-            if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo -n"; fi
-            command -v rsync >/dev/null 2>&1 || {
-              echo "نصب rsync…"
-              $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-              $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync
-            }
-            $SUDO mkdir -p /opt/anon-video
-            [ "$(id -u)" = "0" ] || $SUDO chown "$(id -u):$(id -g)" /opt/anon-video
-            echo "سرور آماده است: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}")"
-          EOF
-
-      - name: همگام‌سازی کد با سرور
-        if: steps.guard.outputs.ready == 'true'
-        run: |
-          # .env و volumeهای داکر روی سرور دست‌نخورده می‌مانند
-          rsync -az --delete \
-            --exclude='.git/' \
-            --exclude='.env' \
-            --exclude='node_modules/' \
-            --exclude='dist/' \
-            --exclude='caddy_data/' \
-            --exclude='caddy_config/' \
-            -e 'ssh' \
-            ./ "target:$REMOTE_DIR/"
-          ssh target "chmod +x '$REMOTE_DIR/deploy.sh' '$REMOTE_DIR/scripts/'*.sh"
-
       - name: استقرار
         if: steps.guard.outputs.ready == 'true'
         env:
@@ -142,8 +112,13 @@ jobs:
           TURN_HOST: ${{ vars.TURN_HOST || 'turn.onlane.top' }}
           ACME_EMAIL: ${{ vars.ACME_EMAIL || '' }}
           FULL: ${{ inputs.full || 'false' }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
-          # مقادیر حساس از طریق stdin می‌روند تا در ps سرور دیده نشوند
+          # مقادیر حساس از طریق stdin می‌روند تا در خروجی ps سرور دیده نشوند.
+          # خودِ اسکریپت هم از چک‌اوت همین runner می‌رود، نه از سرور، تا همیشه
+          # نسخه‌ی تازه اجرا شود.
           {
             if [ -n "$BOT_TOKEN" ]; then
               printf 'export TELEGRAM_BOT_TOKEN=%q\n' "$BOT_TOKEN"
@@ -154,8 +129,11 @@ jobs:
             printf 'export PUBLIC_HOST=%q\n' "$PUBLIC_HOST"
             printf 'export TURN_HOST=%q\n'   "$TURN_HOST"
             printf 'export FORCE_FULL=%q\n'  "$FULL"
-            printf 'cd %q\n'                 "$REMOTE_DIR"
-            printf 'exec bash scripts/remote-deploy.sh\n'
+            printf 'export DIR=%q\n'         "$REMOTE_DIR"
+            printf 'export REPO_URL=%q\n'    "$REPO_URL"
+            printf 'export REF=%q\n'         "$REF"
+            printf 'export SHA=%q\n'         "$SHA"
+            cat scripts/ci-bootstrap.sh
           } | ssh target 'bash -s'
 
       - name: بررسی نهایی

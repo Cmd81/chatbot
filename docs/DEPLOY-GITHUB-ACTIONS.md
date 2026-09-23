@@ -15,84 +15,64 @@
 
 ---
 
-## گام ۱ — ساخت کلید اختصاصی
-
-**روی کامپیوتر خودتان** (نه روی سرور) یک کلید فقط برای CI بسازید:
+## گام ۱ — یک دستور روی سرور
 
 ```bash
-ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/anon_video_deploy -N ""
+cd /opt/anon-video
+git pull
+./scripts/setup-deploy-key.sh
 ```
 
-دو فایل ساخته می‌شود:
+این اسکریپت همه‌ی کارها را می‌کند:
 
-| فایل | کاربرد |
+1. یک کلید SSH **اختصاصیِ فقط برای CI** می‌سازد (`~/.ssh/anon_video_deploy`)
+2. کلید عمومی را روی همین سرور در `authorized_keys` نصب می‌کند
+3. ورود با کلید را **واقعاً تست می‌کند**
+4. آی‌پی و اثر انگشت سرور را پیدا می‌کند
+5. در پایان دقیقاً می‌گوید کدام مقدار در کدام Secret باید برود
+
+> کلید خصوصی فقط روی صفحه‌ی ترمینال خودتان چاپ می‌شود و جایی فرستاده
+> نمی‌شود. بعد از کپی کردن `clear` بزنید.
+
+> چرا کلید جدا و نه کلید خودتان؟ چون هر وقت خواستید می‌توانید فقط همین یکی
+> را باطل کنید، بدون اینکه دسترسی خودتان قطع شود.
+
+## گام ۲ — کپی کردن در GitHub
+
+به `https://github.com/Cmd81/chatbot/settings/secrets/actions` بروید و
+**New repository secret** بزنید. خروجی اسکریپت دقیقاً همین‌ها را می‌دهد:
+
+| نام | از کجا |
 |---|---|
-| `~/.ssh/anon_video_deploy` | **کلید خصوصی** → به GitHub Secrets می‌رود |
-| `~/.ssh/anon_video_deploy.pub` | **کلید عمومی** → روی سرور نصب می‌شود |
-
-> چرا کلید جدا؟ چون هر وقت خواستید می‌توانید فقط همین یکی را باطل کنید، بدون
-> اینکه دسترسی خودتان قطع شود.
-
-## گام ۲ — نصب کلید عمومی روی سرور
-
-```bash
-ssh-copy-id -i ~/.ssh/anon_video_deploy.pub root@167.104.219.227
-```
-
-اگر `ssh-copy-id` ندارید:
-
-```bash
-cat ~/.ssh/anon_video_deploy.pub | ssh root@167.104.219.227 \
-  'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
-```
-
-تست کنید که بدون پسورد وارد می‌شوید:
-
-```bash
-ssh -i ~/.ssh/anon_video_deploy root@167.104.219.227 'echo OK'
-```
-
-## گام ۳ — گرفتن اثر انگشت سرور
-
-این کار جلوی حمله‌ی MITM روی اتصال runner را می‌گیرد:
-
-```bash
-ssh-keyscan -p 22 -H 167.104.219.227
-```
-
-تمام خروجی را کپی کنید (چند خط است).
-
-## گام ۴ — افزودن Secrets و Variables
-
-به `https://github.com/Cmd81/chatbot/settings/secrets/actions` بروید.
-
-### تب Secrets → New repository secret
-
-| نام | مقدار |
-|---|---|
-| `DEPLOY_HOST` | `167.104.219.227` |
-| `DEPLOY_USER` | `root` |
-| `DEPLOY_SSH_KEY` | **تمام محتوای** `~/.ssh/anon_video_deploy` — شامل خط‌های `-----BEGIN ...` و `-----END ...` |
-| `DEPLOY_KNOWN_HOSTS` | خروجی گام ۳ (اختیاری ولی توصیه‌شده) |
-| `TELEGRAM_BOT_TOKEN` | توکن ربات — فقط بار اول لازم است |
+| `DEPLOY_HOST` | آی‌پی سرور — اسکریپت چاپ می‌کند |
+| `DEPLOY_USER` | معمولاً `root` — اسکریپت چاپ می‌کند |
+| `DEPLOY_SSH_KEY` | کل متن کلید خصوصی، شامل خط‌های BEGIN و END |
+| `DEPLOY_KNOWN_HOSTS` | اثر انگشت سرور (اختیاری ولی توصیه‌شده) |
+| `TELEGRAM_BOT_TOKEN` | توکن ربات — فقط بار اولِ استقرار لازم است |
 | `DEPLOY_PORT` | فقط اگر SSH روی پورتی غیر از ۲۲ است |
 
-```bash
-# نمایش کلید خصوصی برای کپی:
-cat ~/.ssh/anon_video_deploy
-```
+### Variables (اختیاری)
 
-### تب Variables → New repository variable
-
-اگر دامنه‌هایتان همین‌هاست، این‌ها اختیاری‌اند (پیش‌فرض همین است):
+اگر دامنه‌هایتان همین‌هاست لازم نیست؛ پیش‌فرض همین است. در تب **Variables**:
 
 | نام | مقدار |
 |---|---|
 | `PUBLIC_HOST` | `chat.onlane.top` |
 | `TURN_HOST` | `turn.onlane.top` |
-| `ACME_EMAIL` | ایمیل واقعی شما برای Let's Encrypt |
+| `ACME_EMAIL` | ایمیل واقعی شما |
 
-## گام ۵ — اجرای اولین استقرار
+## گام ۳ — خاموش کردن به‌روزرسانی زمان‌بندی‌شده
+
+اگر `install-autoupdate.sh` را نصب کرده‌اید، دیگر لازم نیست:
+
+```bash
+./scripts/install-autoupdate.sh off
+```
+
+> اگر هر دو را روشن بگذارید خرابی پیش نمی‌آید — هر دو از یک `flock` مشترک
+> استفاده می‌کنند و روی هم نمی‌افتند — ولی دوباره‌کاری است.
+
+## گام ۴ — اولین استقرار
 
 به `https://github.com/Cmd81/chatbot/actions` بروید:
 

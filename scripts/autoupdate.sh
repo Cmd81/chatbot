@@ -52,29 +52,13 @@ fi
 
 git pull --ff-only --quiet origin "$branch" || { say "git pull ناموفق بود."; exit 1; }
 
-# دامنه‌ی TURN دوباره با .env هماهنگ شود (همان کاری که deploy.sh می‌کند)
-set -a; . "$ROOT_DIR/.env"; set +a
-if [[ -n "${TURN_HOST:-}" ]] && ! grep -q "domain: *${TURN_HOST}\b" livekit.yaml; then
-  sed -i -E "s|^( *domain: *).*|\1${TURN_HOST}|" livekit.yaml
+# ساخت و بالا آوردن را به همان اسکریپتی می‌سپاریم که Actions هم استفاده می‌کند،
+# تا منطق در دو جا تکرار نشود. قفل را همین‌جا گرفته‌ایم.
+say "اجرای استقرار…"
+if ANON_LOCK_HELD=1 ./scripts/remote-deploy.sh; then
+  say "✔ به‌روزرسانی به ${remote_sha:0:7} انجام شد."
+  exit 0
 fi
 
-say "ساخت ایمیج‌ها…"
-if ! docker compose build; then
-  say "build ناموفق بود؛ سرویس‌های قبلی دست‌نخورده در حال اجرا می‌مانند."
-  exit 1
-fi
-
-say "بالا آوردن سرویس‌ها…"
-docker compose up -d --remove-orphans || { say "بالا آوردن سرویس‌ها ناموفق بود."; exit 1; }
-docker image prune -f >/dev/null 2>&1 || true
-
-for _ in $(seq 1 30); do
-  if curl -fsS --max-time 3 http://127.0.0.1:3000/healthz >/dev/null 2>&1; then
-    say "✔ به‌روزرسانی به ${remote_sha:0:7} انجام شد و سرویس سالم است."
-    exit 0
-  fi
-  sleep 3
-done
-
-say "✘ سرویس بعد از به‌روزرسانی سالم گزارش نشد. لاگ: docker compose logs --tail 80"
+say "✘ استقرار ناموفق بود. لاگ: docker compose logs --tail 80"
 exit 1

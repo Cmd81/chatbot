@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-#  اسکریپتی که GitHub Actions روی سرور اجرا می‌کند.
-#  به‌صورت دستی هم قابل اجراست:  bash scripts/remote-deploy.sh
+#  استقرار روی سرور. هم GitHub Actions این را صدا می‌زند، هم autoupdate.sh،
+#  و دستی هم قابل اجراست:  bash scripts/remote-deploy.sh
 #
 #  متغیرهای ورودی (همه اختیاری):
-#    FORCE_FULL=true   اجبار به اجرای کامل deploy.sh
+#    FORCE_FULL=true      اجبار به اجرای کامل deploy.sh
+#    ANON_LOCK_HELD=1     قفل را صدا‌زننده گرفته (برای جلوگیری از بن‌بست)
 #    TELEGRAM_BOT_TOKEN / PUBLIC_HOST / TURN_HOST / ACME_EMAIL
 #        فقط بار اول (وقتی .env هنوز ساخته نشده) استفاده می‌شوند.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT_DIR="$(pwd)"
 
 if [[ "$(id -u)" == "0" ]]; then SUDO=""; else SUDO="sudo -n"; fi
 
 step() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m✔\033[0m %s\n' "$*"; }
 err()  { printf '\033[31m✘\033[0m %s\n' "$*" >&2; }
+
+# دو استقرار هم‌زمان (مثلاً Actions و timer با هم) نباید روی هم بیفتند.
+if [[ "${ANON_LOCK_HELD:-}" != "1" ]]; then
+  exec 9>"/tmp/anon-video-update.lock"
+  flock -w 900 9 || { err "استقرار دیگری در حال اجراست و تمام نشد."; exit 1; }
+fi
 
 # ── تصمیم: استقرار کامل یا فقط به‌روزرسانی؟ ─────────────────────────────────
 full=0
@@ -34,9 +42,18 @@ if [[ $full == 1 ]]; then
   fi
 fi
 
-# ── مسیر سریع: فقط ساخت دوباره و بالا آوردن ────────────────────────────────
+# ── دامنه‌ی TURN باید با .env هماهنگ باشد ───────────────────────────────────
+set -a; . "$ROOT_DIR/.env"; set +a
+if [[ -n "${TURN_HOST:-}" ]] && ! grep -q "domain: *${TURN_HOST}\b" livekit.yaml; then
+  step "هماهنگ‌سازی turn.domain با ${TURN_HOST}"
+  sed -i -E "s|^( *domain: *).*|\1${TURN_HOST}|" livekit.yaml
+fi
+
 step "ساخت ایمیج‌ها"
-$SUDO docker compose build
+if ! $SUDO docker compose build; then
+  err "build ناموفق بود؛ سرویس‌های قبلی دست‌نخورده در حال اجرا می‌مانند."
+  exit 1
+fi
 
 step "بالا آوردن سرویس‌ها"
 $SUDO docker compose up -d --remove-orphans

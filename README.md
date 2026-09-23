@@ -236,10 +236,21 @@ cd /opt/anon-video
 > زنده می‌شود — بدون بازبینی. برای محیط واقعی یا فاصله را بیشتر بگذارید، یا
 > فقط از برنچ پایدار استفاده کنید، یا خاموشش کنید و دستی به‌روز کنید.
 
-### جایگزین: GitHub Actions
+### جایگزین بهتر: استقرار لحظه‌ای با GitHub Actions
 
-اگر می‌خواهید به‌جای هر چند دقیقه یک‌بار بررسی، **لحظه‌ی پوش** استقرار انجام
-شود، workflow آماده است: [`docs/DEPLOY-GITHUB-ACTIONS.md`](docs/DEPLOY-GITHUB-ACTIONS.md)
+به‌جای بررسی هر چند دقیقه، استقرار **در لحظه‌ی پوش** انجام می‌شود. راه‌اندازی
+یک دستور است:
+
+```bash
+./scripts/setup-deploy-key.sh
+```
+
+کلید اختصاصی CI می‌سازد، نصبش می‌کند، تستش می‌کند و می‌گوید کدام مقدار در
+کدام Secret گیت‌هاب برود. راهنمای کامل:
+[`docs/DEPLOY-GITHUB-ACTIONS.md`](docs/DEPLOY-GITHUB-ACTIONS.md)
+
+> هر دو روش از یک `flock` مشترک استفاده می‌کنند، پس اگر تصادفاً هر دو روشن
+> باشند روی هم نمی‌افتند — ولی یکی را خاموش کنید.
 
 ---
 
@@ -433,6 +444,9 @@ node scripts/check-turn.mjs turn.example.com 3478 5349
     ├── check-turn.mjs       تست STUN/TURN روی UDP و TLS
     ├── autoupdate.sh        به‌روزرسانی خودکار در صورت وجود کامیت تازه
     ├── install-autoupdate.sh نصب systemd timer برای autoupdate
+    ├── setup-deploy-key.sh  آماده‌سازی یک‌دستوری استقرار لحظه‌ای
+    ├── ci-bootstrap.sh      اسکریپتی که Actions روی سرور اجرا می‌کند
+    ├── remote-deploy.sh     build + up + health (مشترک بین هر دو روش)
     └── verify.sh            بررسی کامل استقرار
 ```
 
